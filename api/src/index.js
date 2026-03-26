@@ -13,10 +13,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.use('/api/auth', authRoutes);
-app.use('/api/courses', courseRoutes);
-app.use('/api/assignments', assignmentRoutes);
-app.use('/api/canvas', canvasRoutes);
+app.use('/auth', authRoutes);
+app.use('/courses', courseRoutes);
+app.use('/assignments', assignmentRoutes);
+app.use('/canvas', canvasRoutes);
 
 app.get('/', (req, res) => {
   res.json({ message: 'HELLO WORLD, THIS IS TEAM 12. APP UNDER DEVELOPMENT, SOME API ENDPOINTS ARE AVAILABLE' });
