@@ -1,25 +1,42 @@
-import { FormEvent, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { FormEvent, useEffect, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "https://team12.me";
 
+type ResetPasswordLocationState = {
+  email?: string;
+  message?: string;
+};
+
 export default function ResetPassword() {
   const navigate = useNavigate();
+  const location = useLocation();
 
-  const [email, setEmail] = useState("");
+  const state = (location.state as ResetPasswordLocationState) || {};
+
+  const [email, setEmail] = useState(state.email || "");
   const [code, setCode] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(state.message || "");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    if (state.email) {
+      setEmail(state.email);
+    }
+    if (state.message) {
+      setMessage(state.message);
+    }
+  }, [state.email, state.message]);
+
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setMessage("");
     setError("");
+    setMessage("");
 
     if (newPassword !== confirmPassword) {
       setError("Passwords do not match.");
@@ -128,7 +145,7 @@ export default function ResetPassword() {
       )}
 
       <p style={{ marginTop: "12px" }}>
-        <Link to="/forgot-password">Need a reset code?</Link>
+        <Link to="/forgot-password">Go back</Link>
       </p>
 
       <p style={{ marginTop: "12px" }}>

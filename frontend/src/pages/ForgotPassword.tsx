@@ -1,18 +1,18 @@
 import { FormEvent, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "https://team12.me";
 
 export default function ForgotPassword() {
+  const navigate = useNavigate();
+
   const [email, setEmail] = useState("");
-  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setMessage("");
     setError("");
     setLoading(true);
 
@@ -31,8 +31,12 @@ export default function ForgotPassword() {
         throw new Error(data.message || "Failed to send reset code.");
       }
 
-      setMessage(data.message || "Reset code sent to your email.");
-      setEmail("");
+      navigate("/reset-password", {
+        state: {
+          email,
+          message: data.message || "Reset code sent to your email.",
+        },
+      });
     } catch (err: any) {
       setError(err.message || "Something went wrong.");
     } finally {
@@ -63,12 +67,6 @@ export default function ForgotPassword() {
           </button>
         </div>
       </form>
-
-      {message && (
-        <p style={{ color: "green", marginTop: "12px" }}>
-          {message}
-        </p>
-      )}
 
       {error && (
         <p style={{ color: "red", marginTop: "12px" }}>
