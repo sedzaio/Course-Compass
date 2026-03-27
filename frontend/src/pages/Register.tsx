@@ -1,27 +1,30 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import api from '../api';
 import axios from 'axios';
+import api from '../api';
 
 export default function Register(): JSX.Element {
-  const [name, setName] = useState<string>('');
-  const [email, setEmail] = useState<string>('');
-  const [code, setCode] = useState<string>('');
-  const [password, setPassword] = useState<string>('');
-  const [retypePassword, setRetypePassword] = useState<string>('');
-  const [error, setError] = useState<string>('');
-  const [message, setMessage] = useState<string>('');
-  const [codeSent, setCodeSent] = useState<boolean>(false);
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [code, setCode] = useState('');
+  const [password, setPassword] = useState('');
+  const [retypePassword, setRetypePassword] = useState('');
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [codeSent, setCodeSent] = useState(false);
   const navigate = useNavigate();
 
   const sendCode = async (): Promise<void> => {
-    if (!email) return setError('Please enter your email first');
+    if (!email) {
+      setError('Please enter your email first');
+      return;
+    }
     setError('');
     try {
       await api.post('/api/auth/send-code', { email });
       setMessage('Verification code sent to your email.');
       setCodeSent(true);
-    } catch (err: unknown) {
+    } catch (err) {
       if (axios.isAxiosError(err)) {
         setError(err.response?.data?.message || 'Failed to send code');
       } else {
@@ -35,14 +38,15 @@ export default function Register(): JSX.Element {
     setError('');
 
     if (password !== retypePassword) {
-      return setError('Passwords do not match');
+      setError('Passwords do not match');
+      return;
     }
 
     try {
       await api.post('/api/auth/verify-code', { email, code });
       await api.post('/api/auth/register', { name, email, password });
       navigate('/login');
-    } catch (err: unknown) {
+    } catch (err) {
       if (axios.isAxiosError(err)) {
         setError(err.response?.data?.message || 'Registration failed');
       } else {
