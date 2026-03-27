@@ -17,6 +17,13 @@ const genCode = () => Math.floor(100000 + Math.random() * 900000).toString();
 router.post('/send-code', async (req, res) => {
   try {
     const { email } = req.body;
+
+    // Check if already fully registered
+    const existingUser = await User.findOne({ email });
+    if (existingUser && existingUser.isVerified && existingUser.name) {
+      return res.status(400).json({ message: 'Email already registered' });
+    }
+
     const code = genCode();
 
     await User.findOneAndUpdate(
@@ -24,7 +31,6 @@ router.post('/send-code', async (req, res) => {
       { verifyCode: code, isVerified: false },
       { upsert: true, returnDocument: 'after' }
     );
-
 
     await transporter.sendMail({
       from: process.env.EMAIL_USER,
