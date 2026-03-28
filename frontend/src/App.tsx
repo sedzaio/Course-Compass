@@ -3,6 +3,8 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
+import Dashboard from "./pages/Dashboard";
+import Settings from "./pages/Settings";
 
 function App(): JSX.Element {
   return (
@@ -13,6 +15,8 @@ function App(): JSX.Element {
         <Route path="/register" element={<Register />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/settings" element={<Settings />} />
       </Routes>
     </BrowserRouter>
   );
