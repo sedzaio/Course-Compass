@@ -1,67 +1,92 @@
-import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import axios from 'axios';
-import api from '../api';
-import logo from '../styles/logo.png';
-import '../styles/app.css';
+import { FormEvent, useEffect, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import logo from "../styles/logo.png";
+import "../styles/app.css";
 
-export default function Register(): JSX.Element {
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [code, setCode] = useState('');
-  const [password, setPassword] = useState('');
-  const [retypePassword, setRetypePassword] = useState('');
-  const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
-  const [codeSent, setCodeSent] = useState(false);
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || "https://team12.me";
+
+type ResetPasswordLocationState = {
+  email?: string;
+  message?: string;
+};
+
+export default function ResetPassword() {
   const navigate = useNavigate();
+  const location = useLocation();
 
-  const sendCode = async (): Promise<void> => {
-    if (!email) {
-      setError('Please enter your email first');
-      return;
-    }
-    setError('');
-    setMessage('');
-    try {
-      await api.post('/api/auth/send-code', { email });
-      setMessage('Verification code sent to your email.');
-      setCodeSent(true);
-    } catch (err) {
-      if (axios.isAxiosError(err)) {
-        setError(err.response?.data?.message || 'Failed to send code');
-      } else {
-        setError('Failed to send code');
-      }
-    }
-  };
+  const state = (location.state as ResetPasswordLocationState) || {};
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>): Promise<void> => {
+  const [email, setEmail] = useState(state.email || "");
+  const [code, setCode] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+
+  const [message, setMessage] = useState(state.message || "");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (state.email) {
+      setEmail(state.email);
+    }
+    if (state.message) {
+      setMessage(state.message);
+    }
+  }, [state.email, state.message]);
+
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setError('');
-    setMessage('');
+    setError("");
+    setMessage("");
 
-    if (password !== retypePassword) {
-      setError('Passwords do not match');
+    if (newPassword !== confirmPassword) {
+      setError("Passwords do not match.");
       return;
     }
 
+    setLoading(true);
+
     try {
-      await api.post('/api/auth/verify-code', { email, code });
-      await api.post('/api/auth/register', { name, email, password });
-      navigate('/login');
-    } catch (err) {
-      if (axios.isAxiosError(err)) {
-        setError(err.response?.data?.message || 'Registration failed');
-      } else {
-        setError('Registration failed');
+      const response = await fetch(`${API_BASE_URL}/api/auth/reset-password`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email,
+          code,
+          newPassword,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || "Failed to reset password.");
       }
+
+      setMessage(data.message || "Password reset successfully.");
+
+      setTimeout(() => {
+        navigate("/login");
+      }, 1500);
+    } catch (err: any) {
+      setError(err.message || "Something went wrong.");
+    } finally {
+      setLoading(false);
     }
-  };
+  }
 
   return (
     <div className="auth-shell">
-      <div className="auth-container">
+      <div className="auth-container auth-container-column">
+        <div className="auth-top-link-wrap">
+          <Link className="auth-back-link" to="/login">
+            ← Back to login
+          </Link>
+        </div>
+
         <div className="auth-panel">
           <div className="auth-logo-wrap">
             <img src={logo} alt="Course Compass logo" className="auth-logo" />
@@ -72,21 +97,6 @@ export default function Register(): JSX.Element {
 
           <form className="auth-form" onSubmit={handleSubmit}>
             <div className="auth-field">
-              <label className="auth-label" htmlFor="name">
-                Full Name
-              </label>
-              <input
-                id="name"
-                className="auth-input"
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Enter your full name"
-                required
-              />
-            </div>
-
-            <div className="auth-field">
               <label className="auth-label" htmlFor="email">
                 Email
               </label>
@@ -95,10 +105,7 @@ export default function Register(): JSX.Element {
                 className="auth-input"
                 type="email"
                 value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  setCodeSent(false);
-                }}
+                onChange={(e) => setEmail(e.target.value)}
                 placeholder="Enter your email"
                 required
               />
@@ -106,70 +113,59 @@ export default function Register(): JSX.Element {
 
             <div className="auth-field">
               <label className="auth-label" htmlFor="code">
-                Verification Code
-              </label>
-
-              <div className="auth-code-row">
-                <input
-                  id="code"
-                  className="auth-input"
-                  type="text"
-                  value={code}
-                  onChange={(e) => setCode(e.target.value)}
-                  placeholder="Enter verification code"
-                  required
-                />
-                <button
-                  className="auth-code-button"
-                  type="button"
-                  onClick={sendCode}
-                  disabled={codeSent}
-                >
-                  {codeSent ? 'Code Sent ✓' : 'Get Code'}
-                </button>
-              </div>
-            </div>
-
-            <div className="auth-field">
-              <label className="auth-label" htmlFor="password">
-                Password
+                Reset Code
               </label>
               <input
-                id="password"
+                id="code"
                 className="auth-input"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Create a password"
+                type="text"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="Enter reset code"
                 required
               />
             </div>
 
             <div className="auth-field">
-              <label className="auth-label" htmlFor="retypePassword">
-                Retype Password
+              <label className="auth-label" htmlFor="newPassword">
+                New Password
               </label>
               <input
-                id="retypePassword"
+                id="newPassword"
                 className="auth-input"
                 type="password"
-                value={retypePassword}
-                onChange={(e) => setRetypePassword(e.target.value)}
-                placeholder="Retype your password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="Enter new password"
                 required
               />
             </div>
 
-            <button className="auth-submit" type="submit">
-              Create Account
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="confirmPassword">
+                Confirm New Password
+              </label>
+              <input
+                id="confirmPassword"
+                className="auth-input"
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Confirm new password"
+                required
+              />
+            </div>
+
+            <button className="auth-submit" type="submit" disabled={loading}>
+              {loading ? "Resetting..." : "Reset Password"}
             </button>
           </form>
 
           <div className="auth-footer">
             <p className="auth-footer-text">
-              Already have an account?{' '}
-              <Link className="auth-footer-link" to="/login">
-                Login
+              Need a new code?{" "}
+              <Link className="auth-footer-link" to="/forgot-password">
+                Try again
               </Link>
             </p>
           </div>
