@@ -1,7 +1,9 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import api from '../api';
+import logo from '../styles/logo.png';
+import '../styles/app.css';
 
 export default function Register(): JSX.Element {
   const [name, setName] = useState('');
@@ -20,6 +22,7 @@ export default function Register(): JSX.Element {
       return;
     }
     setError('');
+    setMessage('');
     try {
       await api.post('/api/auth/send-code', { email });
       setMessage('Verification code sent to your email.');
@@ -36,6 +39,7 @@ export default function Register(): JSX.Element {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>): Promise<void> => {
     e.preventDefault();
     setError('');
+    setMessage('');
 
     if (password !== retypePassword) {
       setError('Passwords do not match');
@@ -56,71 +60,121 @@ export default function Register(): JSX.Element {
   };
 
   return (
-    <div>
-      <h1>Course Compass</h1>
-      <h2>Register</h2>
+    <div className="auth-shell">
+      <div className="auth-container">
+        <div className="auth-panel">
+          <div className="auth-logo-wrap">
+            <img src={logo} alt="Course Compass logo" className="auth-logo" />
+          </div>
 
-      {message && <p style={{ color: 'green' }}>{message}</p>}
-      {error && <p style={{ color: 'red' }}>{error}</p>}
+          {message && <p className="auth-message auth-message-success">{message}</p>}
+          {error && <p className="auth-message auth-message-error">{error}</p>}
 
-      <form onSubmit={handleSubmit}>
-        <label>Full Name</label><br />
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          required
-        />
-        <br /><br />
+          <form className="auth-form" onSubmit={handleSubmit}>
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="name">
+                Full Name
+              </label>
+              <input
+                id="name"
+                className="auth-input"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Enter your full name"
+                required
+              />
+            </div>
 
-        <label>Email</label><br />
-        <input
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
-        />
-        <br /><br />
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="email">
+                Email
+              </label>
+              <input
+                id="email"
+                className="auth-input"
+                type="email"
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  setCodeSent(false);
+                }}
+                placeholder="Enter your email"
+                required
+              />
+            </div>
 
-        <label>Verification Code</label><br />
-        <input
-          type="text"
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          required
-        />
-        <button
-          type="button"
-          onClick={sendCode}
-          disabled={codeSent}
-        >
-          {codeSent ? 'Code Sent ✓' : 'Get Code'}
-        </button>
-        <br /><br />
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="code">
+                Verification Code
+              </label>
 
-        <label>Password</label><br />
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-        />
-        <br /><br />
+              <div className="auth-code-row">
+                <input
+                  id="code"
+                  className="auth-input"
+                  type="text"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  placeholder="Enter verification code"
+                  required
+                />
+                <button
+                  className="auth-code-button"
+                  type="button"
+                  onClick={sendCode}
+                  disabled={codeSent}
+                >
+                  {codeSent ? 'Code Sent ✓' : 'Get Code'}
+                </button>
+              </div>
+            </div>
 
-        <label>Retype Password</label><br />
-        <input
-          type="password"
-          value={retypePassword}
-          onChange={(e) => setRetypePassword(e.target.value)}
-          required
-        />
-        <br /><br />
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="password">
+                Password
+              </label>
+              <input
+                id="password"
+                className="auth-input"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Create a password"
+                required
+              />
+            </div>
 
-        <button type="submit">Create Account</button>
-      </form>
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="retypePassword">
+                Retype Password
+              </label>
+              <input
+                id="retypePassword"
+                className="auth-input"
+                type="password"
+                value={retypePassword}
+                onChange={(e) => setRetypePassword(e.target.value)}
+                placeholder="Retype your password"
+                required
+              />
+            </div>
 
-      <br />
-      <a href="/login">Already have an account? Login</a>
+            <button className="auth-submit" type="submit">
+              Create Account
+            </button>
+          </form>
+
+          <div className="auth-footer">
+            <p className="auth-footer-text">
+              Already have an account?{' '}
+              <Link className="auth-footer-link" to="/login">
+                Login
+              </Link>
+            </p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
