@@ -1,179 +1,147 @@
-const express = require('express');
-const router = express.Router();
-const https = require('https');
-const http = require('http');
-const CanvasIntegration = require('../models/CanvasIntegration');
-const Course = require('../models/Course');
+const express  = require('express');
+const router   = express.Router();
+const axios    = require('axios');
+const User     = require('../models/User');
 const Assignment = require('../models/Assignment');
-const auth = require('../middleware/auth');
+const Course   = require('../models/Course');
+const auth     = require('../middleware/auth');
 
-// Helper: fetch from Canvas API (handles pagination)
-async function canvasFetch(canvasUrl, token, path) {
-  const base = canvasUrl.replace(/\/$/, '');
-  const url = `${base}/api/v1${path}`;
-
-  return new Promise((resolve, reject) => {
-    const parsedUrl = new URL(url);
-    const lib = parsedUrl.protocol === 'https:' ? https : http;
-
-    const options = {
-      hostname: parsedUrl.hostname,
-      path: parsedUrl.pathname + parsedUrl.search,
-      headers: { Authorization: `Bearer ${token}` }
-    };
-
-    lib.get(options, (res) => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => {
-        try {
-          resolve({ status: res.statusCode, body: JSON.parse(data) });
-        } catch (e) {
-          reject(new Error('Invalid JSON from Canvas'));
-        }
-      });
-    }).on('error', reject);
-  });
-}
-
-// GET /canvas — get saved integration
-router.get('/', auth, async (req, res) => {
+// ─── GET /api/canvas/settings ────────────────────────────────────────────────
+// Returns the stored token + url for the logged-in user (token is masked)
+router.get('/settings', auth, async (req, res) => {
   try {
-    const integration = await CanvasIntegration.findOne({ userId: req.userId });
-    if (!integration) return res.json(null);
-    // Never expose the raw token to the client
+    const user = await User.findById(req.userId).select('canvasToken canvasUrl canvasLastSync');
+    if (!user) return res.status(404).json({ message: 'User not found' });
     res.json({
-      canvasUrl: integration.canvasUrl,
-      lastSync: integration.lastSync,
-      connected: true
+      canvasToken: user.canvasToken ? '••••••••' : '',   // never expose raw token
+      canvasUrl:   user.canvasUrl   || '',
+      lastSync:    user.canvasLastSync || null
     });
   } catch (err) {
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
-// POST /canvas — save or update integration
-router.post('/', auth, async (req, res) => {
-  try {
-    const { canvasUrl, token } = req.body;
-    if (!canvasUrl || !token) {
-      return res.status(400).json({ message: 'canvasUrl and token are required' });
-    }
-
-    // Validate the token against Canvas before saving
-    const trimmedUrl = canvasUrl.replace(/\/$/, '');
-    const test = await canvasFetch(trimmedUrl, token, '/users/self');
-    if (test.status !== 200) {
-      return res.status(400).json({ message: 'Invalid Canvas URL or token. Please check and try again.' });
-    }
-
-    const integration = await CanvasIntegration.findOneAndUpdate(
-      { userId: req.userId },
-      { canvasUrl: trimmedUrl, token },
-      { new: true, upsert: true }
-    );
-
-    res.json({ message: 'Canvas integration saved.', canvasUrl: integration.canvasUrl, connected: true });
-  } catch (err) {
-    if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
-      return res.status(400).json({ message: 'Could not reach Canvas URL. Check the URL and try again.' });
-    }
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
 
-// DELETE /canvas — remove integration
-router.delete('/', auth, async (req, res) => {
+// ─── POST /api/canvas/settings ───────────────────────────────────────────────
+// Save (or update) Canvas token + url
+router.post('/settings', auth, async (req, res) => {
   try {
-    await CanvasIntegration.findOneAndDelete({ userId: req.userId });
+    const { canvasToken, canvasUrl } = req.body;
+    if (!canvasToken || !canvasToken.trim()) {
+      return res.status(400).json({ message: 'Canvas token is required' });
+    }
+
+    const baseUrl = (canvasUrl || 'https://canvas.instructure.com').trim().replace(/\/$/, '');
+
+    // Validate token against Canvas before saving
+    try {
+      await axios.get(`${baseUrl}/api/v1/users/self`, {
+        headers: { Authorization: `Bearer ${canvasToken.trim()}` }
+      });
+    } catch {
+      return res.status(400).json({ message: 'Invalid Canvas token or URL — could not authenticate with Canvas.' });
+    }
+
+    await User.findByIdAndUpdate(req.userId, {
+      canvasToken: canvasToken.trim(),
+      canvasUrl:   baseUrl
+    });
+
+    res.json({ message: 'Canvas settings saved.' });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// ─── DELETE /api/canvas/settings ─────────────────────────────────────────────
+// Remove Canvas integration
+router.delete('/settings', auth, async (req, res) => {
+  try {
+    await User.findByIdAndUpdate(req.userId, {
+      $unset: { canvasToken: '', canvasUrl: '', canvasLastSync: '' }
+    });
     res.json({ message: 'Canvas integration removed.' });
   } catch (err) {
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
 
-// POST /canvas/sync — sync courses + assignments from Canvas into DB
+// ─── POST /api/canvas/sync ───────────────────────────────────────────────────
+// Pull assignments from Canvas and upsert into local DB
 router.post('/sync', auth, async (req, res) => {
   try {
-    const integration = await CanvasIntegration.findOne({ userId: req.userId });
-    if (!integration) {
-      return res.status(404).json({ message: 'No Canvas integration found. Please connect Canvas first.' });
+    const user = await User.findById(req.userId).select('canvasToken canvasUrl');
+    if (!user || !user.canvasToken) {
+      return res.status(400).json({ message: 'Canvas not connected. Add your token in Settings first.' });
     }
 
-    const { canvasUrl, token } = integration;
+    const baseUrl = (user.canvasUrl || 'https://canvas.instructure.com').replace(/\/$/, '');
+    const headers = { Authorization: `Bearer ${user.canvasToken}` };
 
     // 1. Fetch active courses from Canvas
-    const coursesRes = await canvasFetch(canvasUrl, token, '/courses?enrollment_state=active&per_page=50');
-    if (coursesRes.status !== 200) {
-      return res.status(400).json({ message: 'Failed to fetch courses from Canvas.' });
-    }
+    const coursesRes = await axios.get(
+      `${baseUrl}/api/v1/courses?enrollment_state=active&per_page=50`, { headers }
+    );
+    const canvasCourses = coursesRes.data || [];
 
-    const canvasCourses = Array.isArray(coursesRes.body) ? coursesRes.body : [];
-    const importedCourseIds = {};
-    let coursesImported = 0;
-    let assignmentsImported = 0;
-
+    // 2. For each Canvas course upsert a local Course doc
+    const courseIdMap = {}; // canvasCourseId -> local Course._id
     for (const cc of canvasCourses) {
-      if (!cc.name || cc.access_restricted_by_date) continue;
-
-      // Upsert course by canvasId field (we store it to avoid duplicates)
-      let course = await Course.findOne({ userId: req.userId, canvasId: String(cc.id) });
-      if (!course) {
-        course = await Course.create({
-          userId: req.userId,
-          canvasId: String(cc.id),
-          title: cc.name,
-          code: cc.course_code || '',
-          instructor: '',
-          color: '#81A6C6',
-          semester: cc.term?.name || '',
-          isActive: true
+      if (!cc.name) continue;
+      let localCourse = await Course.findOne({ userId: req.userId, canvasId: String(cc.id) });
+      if (!localCourse) {
+        localCourse = await Course.create({
+          userId:   req.userId,
+          name:     cc.name,
+          code:     cc.course_code || '',
+          canvasId: String(cc.id)
         });
-        coursesImported++;
       }
-      importedCourseIds[cc.id] = course._id;
+      courseIdMap[cc.id] = localCourse._id;
+    }
 
-      // 2. Fetch assignments for this course
-      const assignRes = await canvasFetch(canvasUrl, token, `/courses/${cc.id}/assignments?per_page=50`);
-      if (assignRes.status !== 200) continue;
+    // 3. Fetch upcoming assignments for each course
+    let synced = 0;
+    for (const cc of canvasCourses) {
+      let page = 1;
+      while (true) {
+        const aRes = await axios.get(
+          `${baseUrl}/api/v1/courses/${cc.id}/assignments?per_page=50&page=${page}&bucket=upcoming`,
+          { headers }
+        );
+        const items = aRes.data || [];
+        if (!items.length) break;
 
-      const canvasAssignments = Array.isArray(assignRes.body) ? assignRes.body : [];
-
-      for (const ca of canvasAssignments) {
-        if (!ca.name) continue;
-        const exists = await Assignment.findOne({ userId: req.userId, canvasId: String(ca.id) });
-        if (!exists) {
-          await Assignment.create({
-            userId: req.userId,
-            canvasId: String(ca.id),
-            courseId: course._id,
-            title: ca.name,
-            description: ca.description ? ca.description.replace(/<[^>]+>/g, '').trim().slice(0, 500) : '',
-            type: 'assignment',
-            dueDate: ca.due_at ? new Date(ca.due_at) : null,
-            status: 'todo',
-            priority: 0
-          });
-          assignmentsImported++;
+        for (const a of items) {
+          await Assignment.findOneAndUpdate(
+            { userId: req.userId, canvasId: String(a.id) },
+            {
+              userId:      req.userId,
+              canvasId:    String(a.id),
+              courseId:    courseIdMap[cc.id] || null,
+              title:       a.name || 'Untitled',
+              description: a.description ? a.description.replace(/<[^>]+>/g, '') : '',
+              dueDate:     a.due_at ? new Date(a.due_at) : null,
+              source:      'canvas',
+              status:      'pending'
+            },
+            { upsert: true, new: true }
+          );
+          synced++;
         }
+
+        // Canvas uses Link header for pagination; break if last page
+        if (items.length < 50) break;
+        page++;
       }
     }
 
-    // Update lastSync timestamp
-    integration.lastSync = new Date();
-    await integration.save();
+    // 4. Update lastSync timestamp
+    await User.findByIdAndUpdate(req.userId, { canvasLastSync: new Date() });
 
-    res.json({
-      message: 'Sync complete.',
-      coursesImported,
-      assignmentsImported,
-      lastSync: integration.lastSync
-    });
+    res.json({ message: `Sync complete.`, synced });
   } catch (err) {
-    if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
-      return res.status(400).json({ message: 'Could not reach Canvas. Check your URL.' });
-    }
-    res.status(500).json({ message: 'Server error', error: err.message });
+    res.status(500).json({ message: 'Sync failed', error: err.message });
   }
 });
 
