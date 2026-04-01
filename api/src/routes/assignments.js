@@ -26,7 +26,12 @@ router.get('/course/:courseId', auth, async (req, res) => {
 // Create an assignment
 router.post('/', auth, async (req, res) => {
   try {
-    const assignment = new Assignment({ userId: req.userId, ...req.body });
+    const { courseId, ...rest } = req.body;
+    const assignment = new Assignment({
+      userId: req.userId,
+      courseId: courseId || null,
+      ...rest
+    });
     await assignment.save();
     res.status(201).json(assignment);
   } catch (err) {
@@ -37,11 +42,15 @@ router.post('/', auth, async (req, res) => {
 // Update an assignment
 router.put('/:id', auth, async (req, res) => {
   try {
+    const update = { ...req.body };
+    if ('courseId' in update && !update.courseId) update.courseId = null;
+
     const assignment = await Assignment.findOneAndUpdate(
       { _id: req.params.id, userId: req.userId },
-      req.body,
-      { returnDocument: 'after' }
+      update,
+      { new: true }
     );
+    if (!assignment) return res.status(404).json({ message: 'Assignment not found' });
     res.json(assignment);
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
@@ -51,7 +60,8 @@ router.put('/:id', auth, async (req, res) => {
 // Delete an assignment
 router.delete('/:id', auth, async (req, res) => {
   try {
-    await Assignment.findOneAndDelete({ _id: req.params.id, userId: req.userId });
+    const deleted = await Assignment.findOneAndDelete({ _id: req.params.id, userId: req.userId });
+    if (!deleted) return res.status(404).json({ message: 'Assignment not found' });
     res.json({ message: 'Assignment deleted' });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });

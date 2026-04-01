@@ -30,8 +30,9 @@ router.put('/:id', auth, async (req, res) => {
     const course = await Course.findOneAndUpdate(
       { _id: req.params.id, userId: req.userId },
       req.body,
-      { returnDocument: 'after' }
+      { new: true }
     );
+    if (!course) return res.status(404).json({ message: 'Course not found' });
     res.json(course);
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
@@ -41,7 +42,8 @@ router.put('/:id', auth, async (req, res) => {
 // Delete a course
 router.delete('/:id', auth, async (req, res) => {
   try {
-    await Course.findOneAndDelete({ _id: req.params.id, userId: req.userId });
+    const deleted = await Course.findOneAndDelete({ _id: req.params.id, userId: req.userId });
+    if (!deleted) return res.status(404).json({ message: 'Course not found' });
     res.json({ message: 'Course deleted' });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
