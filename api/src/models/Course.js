@@ -8,7 +8,8 @@ const courseSchema = new mongoose.Schema({
   instructor: { type: String },
   color:     { type: String, default: '#81A6C6' },
   semester:  { type: String },
-  isActive:  { type: Boolean, default: true }
+  isActive:  { type: Boolean, default: true },
+  isHidden:  { type: Boolean, default: true }
 });
 
 module.exports = mongoose.model('Course', courseSchema);
