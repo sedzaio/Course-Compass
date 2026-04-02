@@ -42,6 +42,10 @@ const assignmentSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  canvasUrl: {
+  type: String,
+  default: null,
+},
   source: {
     type: String,
     enum: ['manual', 'canvas'],

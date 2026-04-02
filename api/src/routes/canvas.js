@@ -39,55 +39,75 @@ async function runSync(user) {
   const baseUrl = (user.canvasUrl || 'https://canvas.instructure.com').replace(/\/$/, '');
   const headers = { Authorization: `Bearer ${user.canvasToken}` };
 
-  // ── Fetch ALL active courses ──────────────────────────────────────────────
   const canvasCourses = await fetchAllPages(
-    `${baseUrl}/api/v1/courses?enrollment_state=active&per_page=100`,
+    `${baseUrl}/api/v1/courses?enrollment_state=active&per_page=100&include[]=teachers&include[]=term`,
     headers
   );
 
-  // ── Upsert courses locally ────────────────────────────────────────────────
   const courseIdMap = {};
   for (const cc of canvasCourses) {
-    // Skip shells with no name or restricted access
     if (!cc.name || cc.access_restricted_by_date) continue;
+
+    // Extract teacher name and semester/term
+    const instructor = cc.teachers?.[0]
+      ? `${cc.teachers[0].display_name || ''}`.trim()
+      : null;
+    const semester = cc.term?.name || null;
 
     let localCourse = await Course.findOne({ userId: user._id, canvasId: String(cc.id) });
     if (!localCourse) {
       localCourse = await Course.create({
-        userId:   user._id,
-        title:    cc.name,
-        code:     cc.course_code || '',
-        canvasId: String(cc.id),
+        userId:     user._id,
+        title:      cc.name,
+        code:       cc.course_code || '',
+        canvasId:   String(cc.id),
+        instructor: instructor || '',
+        semester:   semester || '',
       });
-    } else if (localCourse.title !== cc.name) {
-      // Keep course title in sync if renamed in Canvas
-      localCourse.title = cc.name;
-      await localCourse.save();
+    } else {
+      // Keep in sync
+      let changed = false;
+      if (localCourse.title !== cc.name)          { localCourse.title = cc.name; changed = true; }
+      if (instructor && localCourse.instructor !== instructor) { localCourse.instructor = instructor; changed = true; }
+      if (semester   && localCourse.semester   !== semester)   { localCourse.semester   = semester;   changed = true; }
+      if (changed) await localCourse.save();
     }
     courseIdMap[cc.id] = localCourse._id;
   }
 
-  // ── Fetch ALL assignments for every course ────────────────────────────────
   let synced = 0;
-
   for (const cc of canvasCourses) {
     if (!cc.name || cc.access_restricted_by_date) continue;
 
-    let assignments;
+    let items;
     try {
-      // No bucket filter — pulls past, current, and future assignments
-      assignments = await fetchAllPages(
+      items = await fetchAllPages(
         `${baseUrl}/api/v1/courses/${cc.id}/assignments?per_page=100&order_by=due_at`,
         headers
       );
     } catch (err) {
-      // Some courses may be inaccessible — skip gracefully
       console.warn(`[canvas sync] Skipping course ${cc.id}: ${err.message}`);
       continue;
     }
 
-    for (const a of assignments) {
-      // Only upsert fields we own — never overwrite user-set `completed`
+    // Also fetch Canvas submissions to get completion state
+    let submissionsMap: Record<string, boolean> = {};
+    try {
+      const subs = await fetchAllPages(
+        `${baseUrl}/api/v1/courses/${cc.id}/students/submissions?per_page=100&student_ids[]=self`,
+        headers
+      );
+      for (const s of subs) {
+        // graded or submitted = done
+        submissionsMap[String(s.assignment_id)] =
+          s.workflow_state === 'graded' || s.workflow_state === 'submitted';
+      }
+    } catch { /* submissions not critical */ }
+
+    for (const a of items) {
+      const isDone = submissionsMap[String(a.id)] || false;
+      const canvasLink = `${baseUrl}/courses/${cc.id}/assignments/${a.id}`;
+
       await Assignment.findOneAndUpdate(
         { userId: user._id, canvasId: String(a.id) },
         {
@@ -97,12 +117,13 @@ async function runSync(user) {
             description: a.description ? a.description.replace(/<[^>]+>/g, '').trim() : '',
             dueDate:     a.due_at ? new Date(a.due_at) : null,
             source:      'canvas',
+            canvasUrl:   canvasLink,
+            completed:   isDone,   // always mirror Canvas submission state
           },
           $setOnInsert: {
-            userId:    user._id,
-            canvasId:  String(a.id),
-            completed: false,
-            type:      'assignment',
+            userId:   user._id,
+            canvasId: String(a.id),
+            type:     'assignment',
           },
         },
         { upsert: true, new: true }
@@ -110,7 +131,6 @@ async function runSync(user) {
       synced++;
     }
   }
-
   return synced;
 }
 
