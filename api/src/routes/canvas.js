@@ -16,61 +16,101 @@ function computeNextSync(from, frequency) {
   return d;
 }
 
+// Follow Canvas Link header pagination — fetches ALL pages reliably
+async function fetchAllPages(firstUrl, headers) {
+  let results = [];
+  let url = firstUrl;
+
+  while (url) {
+    const res = await axios.get(url, { headers });
+    const data = res.data;
+    if (Array.isArray(data)) results = results.concat(data);
+
+    // Parse Link header: <url>; rel="next"
+    const linkHeader = res.headers['link'] || '';
+    const nextMatch  = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+    url = nextMatch ? nextMatch[1] : null;
+  }
+
+  return results;
+}
+
 async function runSync(user) {
   const baseUrl = (user.canvasUrl || 'https://canvas.instructure.com').replace(/\/$/, '');
   const headers = { Authorization: `Bearer ${user.canvasToken}` };
 
-  const coursesRes = await axios.get(
-    `${baseUrl}/api/v1/courses?enrollment_state=active&per_page=50`, { headers }
+  // ── Fetch ALL active courses ──────────────────────────────────────────────
+  const canvasCourses = await fetchAllPages(
+    `${baseUrl}/api/v1/courses?enrollment_state=active&per_page=100`,
+    headers
   );
-  const canvasCourses = coursesRes.data || [];
 
+  // ── Upsert courses locally ────────────────────────────────────────────────
   const courseIdMap = {};
   for (const cc of canvasCourses) {
-    if (!cc.name) continue;
+    // Skip shells with no name or restricted access
+    if (!cc.name || cc.access_restricted_by_date) continue;
+
     let localCourse = await Course.findOne({ userId: user._id, canvasId: String(cc.id) });
     if (!localCourse) {
       localCourse = await Course.create({
         userId:   user._id,
-        title:    cc.name,          // ← was `name`, Course schema uses `title`
+        title:    cc.name,
         code:     cc.course_code || '',
         canvasId: String(cc.id),
       });
+    } else if (localCourse.title !== cc.name) {
+      // Keep course title in sync if renamed in Canvas
+      localCourse.title = cc.name;
+      await localCourse.save();
     }
     courseIdMap[cc.id] = localCourse._id;
   }
 
+  // ── Fetch ALL assignments for every course ────────────────────────────────
   let synced = 0;
-  for (const cc of canvasCourses) {
-    let page = 1;
-    while (true) {
-      const aRes = await axios.get(
-        `${baseUrl}/api/v1/courses/${cc.id}/assignments?per_page=50&page=${page}&bucket=upcoming`,
-        { headers }
-      );
-      const items = aRes.data || [];
-      if (!items.length) break;
 
-      for (const a of items) {
-        await Assignment.findOneAndUpdate(
-          { userId: user._id, canvasId: String(a.id) },
-          {
-            userId:      user._id,
-            canvasId:    String(a.id),
+  for (const cc of canvasCourses) {
+    if (!cc.name || cc.access_restricted_by_date) continue;
+
+    let assignments;
+    try {
+      // No bucket filter — pulls past, current, and future assignments
+      assignments = await fetchAllPages(
+        `${baseUrl}/api/v1/courses/${cc.id}/assignments?per_page=100&order_by=due_at`,
+        headers
+      );
+    } catch (err) {
+      // Some courses may be inaccessible — skip gracefully
+      console.warn(`[canvas sync] Skipping course ${cc.id}: ${err.message}`);
+      continue;
+    }
+
+    for (const a of assignments) {
+      // Only upsert fields we own — never overwrite user-set `completed`
+      await Assignment.findOneAndUpdate(
+        { userId: user._id, canvasId: String(a.id) },
+        {
+          $set: {
             courseId:    courseIdMap[cc.id] || null,
             title:       a.name || 'Untitled',
-            description: a.description ? a.description.replace(/<[^>]+>/g, '') : '',
+            description: a.description ? a.description.replace(/<[^>]+>/g, '').trim() : '',
             dueDate:     a.due_at ? new Date(a.due_at) : null,
             source:      'canvas',
           },
-          { upsert: true, new: true, setDefaultsOnInsert: true }
-        );
-        synced++;
-      }
-      if (items.length < 50) break;
-      page++;
+          $setOnInsert: {
+            userId:    user._id,
+            canvasId:  String(a.id),
+            completed: false,
+            type:      'assignment',
+          },
+        },
+        { upsert: true, new: true }
+      );
+      synced++;
     }
   }
+
   return synced;
 }
 
@@ -82,12 +122,12 @@ router.get('/settings', auth, async (req, res) => {
       .select('canvasToken canvasUrl canvasLastSync canvasSyncFrequency canvasNextSync');
     if (!user) return res.status(404).json({ message: 'User not found' });
     res.json({
-      canvasToken:    user.canvasToken ? '••••••••' : '',
-      canvasUrl:      user.canvasUrl   || '',
-      lastSync:       user.canvasLastSync  || null,
-      nextSync:       user.canvasNextSync  || null,
-      syncFrequency:  user.canvasSyncFrequency || 'weekly',
-      isConnected:    !!user.canvasToken
+      canvasToken:   user.canvasToken ? '••••••••' : '',
+      canvasUrl:     user.canvasUrl   || '',
+      lastSync:      user.canvasLastSync   || null,
+      nextSync:      user.canvasNextSync   || null,
+      syncFrequency: user.canvasSyncFrequency || 'weekly',
+      isConnected:   !!user.canvasToken,
     });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -99,16 +139,15 @@ router.get('/settings', auth, async (req, res) => {
 router.post('/settings', auth, async (req, res) => {
   try {
     const { canvasToken, canvasUrl, syncFrequency } = req.body;
-    if (!canvasToken || !canvasToken.trim()) {
+    if (!canvasToken || !canvasToken.trim())
       return res.status(400).json({ message: 'Canvas token is required' });
-    }
 
     const baseUrl = (canvasUrl || 'https://canvas.instructure.com').trim().replace(/\/$/, '');
     const freq    = ['daily', 'weekly', 'monthly'].includes(syncFrequency) ? syncFrequency : 'weekly';
 
     try {
       await axios.get(`${baseUrl}/api/v1/users/self`, {
-        headers: { Authorization: `Bearer ${canvasToken.trim()}` }
+        headers: { Authorization: `Bearer ${canvasToken.trim()}` },
       });
     } catch {
       return res.status(400).json({ message: 'Invalid Canvas token or URL — could not authenticate with Canvas.' });
@@ -121,7 +160,7 @@ router.post('/settings', auth, async (req, res) => {
       canvasToken:         canvasToken.trim(),
       canvasUrl:           baseUrl,
       canvasSyncFrequency: freq,
-      canvasNextSync:      nextSync
+      canvasNextSync:      nextSync,
     });
 
     res.json({ message: 'Canvas settings saved.', nextSync, syncFrequency: freq });
@@ -131,26 +170,23 @@ router.post('/settings', auth, async (req, res) => {
 });
 
 // ─── PUT /api/canvas/settings/frequency ──────────────────────────────────────
-// Update only the sync frequency and recalculate nextSync from lastSync (or now)
 
 router.put('/settings/frequency', auth, async (req, res) => {
   try {
     const { syncFrequency } = req.body;
-    if (!['daily', 'weekly', 'monthly'].includes(syncFrequency)) {
+    if (!['daily', 'weekly', 'monthly'].includes(syncFrequency))
       return res.status(400).json({ message: 'Invalid frequency. Use daily, weekly, or monthly.' });
-    }
 
-    const user = await User.findById(req.userId).select('canvasLastSync canvasSyncFrequency canvasToken');
-    if (!user || !user.canvasToken) {
+    const user = await User.findById(req.userId).select('canvasLastSync canvasToken');
+    if (!user || !user.canvasToken)
       return res.status(400).json({ message: 'Canvas not connected.' });
-    }
 
     const base     = user.canvasLastSync || new Date();
     const nextSync = computeNextSync(base, syncFrequency);
 
     await User.findByIdAndUpdate(req.userId, {
       canvasSyncFrequency: syncFrequency,
-      canvasNextSync:      nextSync
+      canvasNextSync:      nextSync,
     });
 
     res.json({ message: 'Sync frequency updated.', syncFrequency, nextSync });
@@ -166,8 +202,8 @@ router.delete('/settings', auth, async (req, res) => {
     await User.findByIdAndUpdate(req.userId, {
       $unset: {
         canvasToken: '', canvasUrl: '', canvasLastSync: '',
-        canvasNextSync: '', canvasSyncFrequency: ''
-      }
+        canvasNextSync: '', canvasSyncFrequency: '',
+      },
     });
     res.json({ message: 'Canvas integration removed.' });
   } catch (err) {
@@ -176,15 +212,13 @@ router.delete('/settings', auth, async (req, res) => {
 });
 
 // ─── POST /api/canvas/sync ────────────────────────────────────────────────────
-// Manual sync — always runs, then advances nextSync by frequency interval
 
 router.post('/sync', auth, async (req, res) => {
   try {
     const user = await User.findById(req.userId)
-      .select('canvasToken canvasUrl canvasSyncFrequency canvasNextSync');
-    if (!user || !user.canvasToken) {
+      .select('canvasToken canvasUrl canvasSyncFrequency');
+    if (!user || !user.canvasToken)
       return res.status(400).json({ message: 'Canvas not connected. Add your token in Settings first.' });
-    }
 
     const synced   = await runSync(user);
     const now      = new Date();
@@ -193,46 +227,44 @@ router.post('/sync', auth, async (req, res) => {
 
     await User.findByIdAndUpdate(req.userId, {
       canvasLastSync: now,
-      canvasNextSync: nextSync
+      canvasNextSync: nextSync,
     });
 
     res.json({ message: 'Sync complete.', synced, lastSync: now, nextSync });
   } catch (err) {
+    console.error('[canvas sync]', err);
     res.status(500).json({ message: 'Sync failed', error: err.message });
   }
 });
 
 // ─── POST /api/canvas/check-sync ─────────────────────────────────────────────
-// Called on dashboard load. Runs sync automatically only if now >= nextSync.
 
 router.post('/check-sync', auth, async (req, res) => {
   try {
     const user = await User.findById(req.userId)
       .select('canvasToken canvasUrl canvasLastSync canvasSyncFrequency canvasNextSync');
 
-    if (!user || !user.canvasToken) {
+    if (!user || !user.canvasToken)
       return res.json({ synced: false, reason: 'not_connected' });
-    }
 
     const now      = new Date();
     const nextSync = user.canvasNextSync ? new Date(user.canvasNextSync) : null;
 
-    if (!nextSync || now < nextSync) {
+    if (!nextSync || now < nextSync)
       return res.json({ synced: false, reason: 'not_due', nextSync: nextSync || null });
-    }
 
-    // It's due — run the sync
-    const count    = await runSync(user);
-    const freq     = user.canvasSyncFrequency || 'weekly';
-    const newNext  = computeNextSync(now, freq);
+    const count   = await runSync(user);
+    const freq    = user.canvasSyncFrequency || 'weekly';
+    const newNext = computeNextSync(now, freq);
 
     await User.findByIdAndUpdate(req.userId, {
       canvasLastSync: now,
-      canvasNextSync: newNext
+      canvasNextSync: newNext,
     });
 
     res.json({ synced: true, count, lastSync: now, nextSync: newNext });
   } catch (err) {
+    console.error('[canvas check-sync]', err);
     res.status(500).json({ message: 'Auto-sync failed', error: err.message });
   }
 });
