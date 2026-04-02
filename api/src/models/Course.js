@@ -9,7 +9,7 @@ const courseSchema = new mongoose.Schema({
   color:     { type: String, default: '#81A6C6' },
   semester:  { type: String },
   isActive:  { type: Boolean, default: true },
-  isHidden:  { type: Boolean, default: true }
+  isHidden:  { type: Boolean, default: false }
 });
 
 module.exports = mongoose.model('Course', courseSchema);
