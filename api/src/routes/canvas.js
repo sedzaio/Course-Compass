@@ -32,9 +32,9 @@ async function runSync(user) {
     if (!localCourse) {
       localCourse = await Course.create({
         userId:   user._id,
-        name:     cc.name,
+        title:    cc.name,          // ← was `name`, Course schema uses `title`
         code:     cc.course_code || '',
-        canvasId: String(cc.id)
+        canvasId: String(cc.id),
       });
     }
     courseIdMap[cc.id] = localCourse._id;
@@ -62,7 +62,6 @@ async function runSync(user) {
             description: a.description ? a.description.replace(/<[^>]+>/g, '') : '',
             dueDate:     a.due_at ? new Date(a.due_at) : null,
             source:      'canvas',
-            completed:   false
           },
           { upsert: true, new: true, setDefaultsOnInsert: true }
         );
