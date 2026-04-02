@@ -26,7 +26,6 @@ async function fetchAllPages(firstUrl, headers) {
     const data = res.data;
     if (Array.isArray(data)) results = results.concat(data);
 
-    // Parse Link header: <url>; rel="next"
     const linkHeader = res.headers['link'] || '';
     const nextMatch  = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
     url = nextMatch ? nextMatch[1] : null;
@@ -48,7 +47,6 @@ async function runSync(user) {
   for (const cc of canvasCourses) {
     if (!cc.name || cc.access_restricted_by_date) continue;
 
-    // Extract teacher name and semester/term
     const instructor = cc.teachers?.[0]
       ? `${cc.teachers[0].display_name || ''}`.trim()
       : null;
@@ -65,11 +63,10 @@ async function runSync(user) {
         semester:   semester || '',
       });
     } else {
-      // Keep in sync
       let changed = false;
-      if (localCourse.title !== cc.name)          { localCourse.title = cc.name; changed = true; }
-      if (instructor && localCourse.instructor !== instructor) { localCourse.instructor = instructor; changed = true; }
-      if (semester   && localCourse.semester   !== semester)   { localCourse.semester   = semester;   changed = true; }
+      if (localCourse.title !== cc.name)                        { localCourse.title = cc.name;           changed = true; }
+      if (instructor && localCourse.instructor !== instructor)  { localCourse.instructor = instructor;   changed = true; }
+      if (semester   && localCourse.semester   !== semester)    { localCourse.semester   = semester;     changed = true; }
       if (changed) await localCourse.save();
     }
     courseIdMap[cc.id] = localCourse._id;
@@ -90,22 +87,21 @@ async function runSync(user) {
       continue;
     }
 
-    // Also fetch Canvas submissions to get completion state
-    let submissionsMap: Record<string, boolean> = {};
+    // Fetch submissions to mirror Canvas completion state
+    const submissionsMap = {};   // ← plain JS object, no TS syntax
     try {
       const subs = await fetchAllPages(
         `${baseUrl}/api/v1/courses/${cc.id}/students/submissions?per_page=100&student_ids[]=self`,
         headers
       );
       for (const s of subs) {
-        // graded or submitted = done
         submissionsMap[String(s.assignment_id)] =
           s.workflow_state === 'graded' || s.workflow_state === 'submitted';
       }
-    } catch { /* submissions not critical */ }
+    } catch (_) { /* submissions not critical */ }
 
     for (const a of items) {
-      const isDone = submissionsMap[String(a.id)] || false;
+      const isDone     = submissionsMap[String(a.id)] || false;
       const canvasLink = `${baseUrl}/courses/${cc.id}/assignments/${a.id}`;
 
       await Assignment.findOneAndUpdate(
@@ -118,7 +114,7 @@ async function runSync(user) {
             dueDate:     a.due_at ? new Date(a.due_at) : null,
             source:      'canvas',
             canvasUrl:   canvasLink,
-            completed:   isDone,   // always mirror Canvas submission state
+            completed:   isDone,
           },
           $setOnInsert: {
             userId:   user._id,
