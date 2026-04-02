@@ -1,4 +1,3 @@
-// api/src/models/User.js
 const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
@@ -9,9 +8,11 @@ const userSchema = new mongoose.Schema({
   verifyCode: { type: String },
 
   // Canvas integration
-  canvasToken:    { type: String, default: null },
-  canvasUrl:      { type: String, default: null },
-  canvasLastSync: { type: Date,   default: null },
+  canvasToken:         { type: String, default: null },
+  canvasUrl:           { type: String, default: null },
+  canvasLastSync:      { type: Date,   default: null },
+  canvasSyncFrequency: { type: String, enum: ['daily', 'weekly', 'monthly'], default: 'weekly' },
+  canvasNextSync:      { type: Date,   default: null },
 
   // User preferences
   preferences: {

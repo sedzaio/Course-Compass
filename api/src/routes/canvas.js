@@ -1,39 +1,112 @@
-const express  = require('express');
-const router   = express.Router();
-const axios    = require('axios');
-const User     = require('../models/User');
+const express    = require('express');
+const router     = express.Router();
+const axios      = require('axios');
+const User       = require('../models/User');
 const Assignment = require('../models/Assignment');
-const Course   = require('../models/Course');
-const auth     = require('../middleware/auth');
+const Course     = require('../models/Course');
+const auth       = require('../middleware/auth');
 
-// ─── GET /api/canvas/settings ────────────────────────────────────────────────
-// Returns the stored token + url for the logged-in user (token is masked)
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function computeNextSync(from, frequency) {
+  const d = new Date(from);
+  if (frequency === 'daily')   d.setDate(d.getDate() + 1);
+  if (frequency === 'weekly')  d.setDate(d.getDate() + 7);
+  if (frequency === 'monthly') d.setMonth(d.getMonth() + 1);
+  return d;
+}
+
+async function runSync(user) {
+  const baseUrl = (user.canvasUrl || 'https://canvas.instructure.com').replace(/\/$/, '');
+  const headers = { Authorization: `Bearer ${user.canvasToken}` };
+
+  const coursesRes = await axios.get(
+    `${baseUrl}/api/v1/courses?enrollment_state=active&per_page=50`, { headers }
+  );
+  const canvasCourses = coursesRes.data || [];
+
+  const courseIdMap = {};
+  for (const cc of canvasCourses) {
+    if (!cc.name) continue;
+    let localCourse = await Course.findOne({ userId: user._id, canvasId: String(cc.id) });
+    if (!localCourse) {
+      localCourse = await Course.create({
+        userId:   user._id,
+        name:     cc.name,
+        code:     cc.course_code || '',
+        canvasId: String(cc.id)
+      });
+    }
+    courseIdMap[cc.id] = localCourse._id;
+  }
+
+  let synced = 0;
+  for (const cc of canvasCourses) {
+    let page = 1;
+    while (true) {
+      const aRes = await axios.get(
+        `${baseUrl}/api/v1/courses/${cc.id}/assignments?per_page=50&page=${page}&bucket=upcoming`,
+        { headers }
+      );
+      const items = aRes.data || [];
+      if (!items.length) break;
+
+      for (const a of items) {
+        await Assignment.findOneAndUpdate(
+          { userId: user._id, canvasId: String(a.id) },
+          {
+            userId:      user._id,
+            canvasId:    String(a.id),
+            courseId:    courseIdMap[cc.id] || null,
+            title:       a.name || 'Untitled',
+            description: a.description ? a.description.replace(/<[^>]+>/g, '') : '',
+            dueDate:     a.due_at ? new Date(a.due_at) : null,
+            source:      'canvas',
+            completed:   false
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+        synced++;
+      }
+      if (items.length < 50) break;
+      page++;
+    }
+  }
+  return synced;
+}
+
+// ─── GET /api/canvas/settings ─────────────────────────────────────────────────
+
 router.get('/settings', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.userId).select('canvasToken canvasUrl canvasLastSync');
+    const user = await User.findById(req.userId)
+      .select('canvasToken canvasUrl canvasLastSync canvasSyncFrequency canvasNextSync');
     if (!user) return res.status(404).json({ message: 'User not found' });
     res.json({
-      canvasToken: user.canvasToken ? '••••••••' : '',   // never expose raw token
-      canvasUrl:   user.canvasUrl   || '',
-      lastSync:    user.canvasLastSync || null
+      canvasToken:    user.canvasToken ? '••••••••' : '',
+      canvasUrl:      user.canvasUrl   || '',
+      lastSync:       user.canvasLastSync  || null,
+      nextSync:       user.canvasNextSync  || null,
+      syncFrequency:  user.canvasSyncFrequency || 'weekly',
+      isConnected:    !!user.canvasToken
     });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
 
-// ─── POST /api/canvas/settings ───────────────────────────────────────────────
-// Save (or update) Canvas token + url
+// ─── POST /api/canvas/settings ────────────────────────────────────────────────
+
 router.post('/settings', auth, async (req, res) => {
   try {
-    const { canvasToken, canvasUrl } = req.body;
+    const { canvasToken, canvasUrl, syncFrequency } = req.body;
     if (!canvasToken || !canvasToken.trim()) {
       return res.status(400).json({ message: 'Canvas token is required' });
     }
 
     const baseUrl = (canvasUrl || 'https://canvas.instructure.com').trim().replace(/\/$/, '');
+    const freq    = ['daily', 'weekly', 'monthly'].includes(syncFrequency) ? syncFrequency : 'weekly';
 
-    // Validate token against Canvas before saving
     try {
       await axios.get(`${baseUrl}/api/v1/users/self`, {
         headers: { Authorization: `Bearer ${canvasToken.trim()}` }
@@ -42,23 +115,60 @@ router.post('/settings', auth, async (req, res) => {
       return res.status(400).json({ message: 'Invalid Canvas token or URL — could not authenticate with Canvas.' });
     }
 
+    const now      = new Date();
+    const nextSync = computeNextSync(now, freq);
+
     await User.findByIdAndUpdate(req.userId, {
-      canvasToken: canvasToken.trim(),
-      canvasUrl:   baseUrl
+      canvasToken:         canvasToken.trim(),
+      canvasUrl:           baseUrl,
+      canvasSyncFrequency: freq,
+      canvasNextSync:      nextSync
     });
 
-    res.json({ message: 'Canvas settings saved.' });
+    res.json({ message: 'Canvas settings saved.', nextSync, syncFrequency: freq });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// ─── PUT /api/canvas/settings/frequency ──────────────────────────────────────
+// Update only the sync frequency and recalculate nextSync from lastSync (or now)
+
+router.put('/settings/frequency', auth, async (req, res) => {
+  try {
+    const { syncFrequency } = req.body;
+    if (!['daily', 'weekly', 'monthly'].includes(syncFrequency)) {
+      return res.status(400).json({ message: 'Invalid frequency. Use daily, weekly, or monthly.' });
+    }
+
+    const user = await User.findById(req.userId).select('canvasLastSync canvasSyncFrequency canvasToken');
+    if (!user || !user.canvasToken) {
+      return res.status(400).json({ message: 'Canvas not connected.' });
+    }
+
+    const base     = user.canvasLastSync || new Date();
+    const nextSync = computeNextSync(base, syncFrequency);
+
+    await User.findByIdAndUpdate(req.userId, {
+      canvasSyncFrequency: syncFrequency,
+      canvasNextSync:      nextSync
+    });
+
+    res.json({ message: 'Sync frequency updated.', syncFrequency, nextSync });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
 
 // ─── DELETE /api/canvas/settings ─────────────────────────────────────────────
-// Remove Canvas integration
+
 router.delete('/settings', auth, async (req, res) => {
   try {
     await User.findByIdAndUpdate(req.userId, {
-      $unset: { canvasToken: '', canvasUrl: '', canvasLastSync: '' }
+      $unset: {
+        canvasToken: '', canvasUrl: '', canvasLastSync: '',
+        canvasNextSync: '', canvasSyncFrequency: ''
+      }
     });
     res.json({ message: 'Canvas integration removed.' });
   } catch (err) {
@@ -66,82 +176,65 @@ router.delete('/settings', auth, async (req, res) => {
   }
 });
 
-// ─── POST /api/canvas/sync ───────────────────────────────────────────────────
-// Pull assignments from Canvas and upsert into local DB
+// ─── POST /api/canvas/sync ────────────────────────────────────────────────────
+// Manual sync — always runs, then advances nextSync by frequency interval
+
 router.post('/sync', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.userId).select('canvasToken canvasUrl');
+    const user = await User.findById(req.userId)
+      .select('canvasToken canvasUrl canvasSyncFrequency canvasNextSync');
     if (!user || !user.canvasToken) {
       return res.status(400).json({ message: 'Canvas not connected. Add your token in Settings first.' });
     }
 
-    const baseUrl = (user.canvasUrl || 'https://canvas.instructure.com').replace(/\/$/, '');
-    const headers = { Authorization: `Bearer ${user.canvasToken}` };
+    const synced   = await runSync(user);
+    const now      = new Date();
+    const freq     = user.canvasSyncFrequency || 'weekly';
+    const nextSync = computeNextSync(now, freq);
 
-    // 1. Fetch active courses from Canvas
-    const coursesRes = await axios.get(
-      `${baseUrl}/api/v1/courses?enrollment_state=active&per_page=50`, { headers }
-    );
-    const canvasCourses = coursesRes.data || [];
+    await User.findByIdAndUpdate(req.userId, {
+      canvasLastSync: now,
+      canvasNextSync: nextSync
+    });
 
-    // 2. For each Canvas course upsert a local Course doc
-    const courseIdMap = {}; // canvasCourseId -> local Course._id
-    for (const cc of canvasCourses) {
-      if (!cc.name) continue;
-      let localCourse = await Course.findOne({ userId: req.userId, canvasId: String(cc.id) });
-      if (!localCourse) {
-        localCourse = await Course.create({
-          userId:   req.userId,
-          name:     cc.name,
-          code:     cc.course_code || '',
-          canvasId: String(cc.id)
-        });
-      }
-      courseIdMap[cc.id] = localCourse._id;
-    }
-
-    // 3. Fetch upcoming assignments for each course
-    let synced = 0;
-    for (const cc of canvasCourses) {
-      let page = 1;
-      while (true) {
-        const aRes = await axios.get(
-          `${baseUrl}/api/v1/courses/${cc.id}/assignments?per_page=50&page=${page}&bucket=upcoming`,
-          { headers }
-        );
-        const items = aRes.data || [];
-        if (!items.length) break;
-
-        for (const a of items) {
-          await Assignment.findOneAndUpdate(
-            { userId: req.userId, canvasId: String(a.id) },
-            {
-              userId:      req.userId,
-              canvasId:    String(a.id),
-              courseId:    courseIdMap[cc.id] || null,
-              title:       a.name || 'Untitled',
-              description: a.description ? a.description.replace(/<[^>]+>/g, '') : '',
-              dueDate:     a.due_at ? new Date(a.due_at) : null,
-              source:      'canvas',
-              status:      'pending'
-            },
-            { upsert: true, new: true }
-          );
-          synced++;
-        }
-
-        // Canvas uses Link header for pagination; break if last page
-        if (items.length < 50) break;
-        page++;
-      }
-    }
-
-    // 4. Update lastSync timestamp
-    await User.findByIdAndUpdate(req.userId, { canvasLastSync: new Date() });
-
-    res.json({ message: `Sync complete.`, synced });
+    res.json({ message: 'Sync complete.', synced, lastSync: now, nextSync });
   } catch (err) {
     res.status(500).json({ message: 'Sync failed', error: err.message });
+  }
+});
+
+// ─── POST /api/canvas/check-sync ─────────────────────────────────────────────
+// Called on dashboard load. Runs sync automatically only if now >= nextSync.
+
+router.post('/check-sync', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId)
+      .select('canvasToken canvasUrl canvasLastSync canvasSyncFrequency canvasNextSync');
+
+    if (!user || !user.canvasToken) {
+      return res.json({ synced: false, reason: 'not_connected' });
+    }
+
+    const now      = new Date();
+    const nextSync = user.canvasNextSync ? new Date(user.canvasNextSync) : null;
+
+    if (!nextSync || now < nextSync) {
+      return res.json({ synced: false, reason: 'not_due', nextSync: nextSync || null });
+    }
+
+    // It's due — run the sync
+    const count    = await runSync(user);
+    const freq     = user.canvasSyncFrequency || 'weekly';
+    const newNext  = computeNextSync(now, freq);
+
+    await User.findByIdAndUpdate(req.userId, {
+      canvasLastSync: now,
+      canvasNextSync: newNext
+    });
+
+    res.json({ synced: true, count, lastSync: now, nextSync: newNext });
+  } catch (err) {
+    res.status(500).json({ message: 'Auto-sync failed', error: err.message });
   }
 });
 
