@@ -1,3 +1,4 @@
+// api/src/models/Assignment.js
 const mongoose = require('mongoose');
 
 const assignmentSchema = new mongoose.Schema({
@@ -24,17 +25,19 @@ const assignmentSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
-  status: {
-    type: String,
-    enum: ['pending', 'in-progress', 'completed'],
-    default: 'pending'
+  completed: {
+    type: Boolean,
+    default: false
   },
-  priority: {
+  type: {
     type: String,
-    enum: ['low', 'medium', 'high'],
-    default: 'medium'
+    enum: ['assignment', 'quiz', 'exam', 'project', 'reading', 'other'],
+    default: 'assignment'
   },
-  // Canvas-synced assignments carry their source id
+  estimatedTime: {
+    type: Number, 
+    default: null
+  },
   canvasId: {
     type: String,
     default: null

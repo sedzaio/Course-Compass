@@ -1,3 +1,4 @@
+// api/src/models/User.js
 const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
@@ -10,7 +11,13 @@ const userSchema = new mongoose.Schema({
   // Canvas integration
   canvasToken:    { type: String, default: null },
   canvasUrl:      { type: String, default: null },
-  canvasLastSync: { type: Date,   default: null }
+  canvasLastSync: { type: Date,   default: null },
+
+  // User preferences
+  preferences: {
+    firstDayOfWeek: { type: String, enum: ['sunday', 'monday'], default: 'sunday' },
+    theme:          { type: String, enum: ['light', 'dark', 'system'], default: 'light' },
+  }
 
 }, { timestamps: true });
 

@@ -178,5 +178,38 @@ router.put('/account', auth, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
+router.get('/preferences', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).select('preferences');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    res.json(user.preferences || {});
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
 
+// PUT /api/auth/preferences  { firstDayOfWeek?, theme? }
+router.put('/preferences', auth, async (req, res) => {
+  try {
+    const { firstDayOfWeek, theme } = req.body;
+    const update = {};
+    if (firstDayOfWeek === 'monday' || firstDayOfWeek === 'sunday') {
+      update['preferences.firstDayOfWeek'] = firstDayOfWeek;
+    }
+    if (theme === 'light' || theme === 'dark' || theme === 'system') {
+      update['preferences.theme'] = theme;
+    }
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ message: 'No valid preferences provided' });
+    }
+    const user = await User.findByIdAndUpdate(
+      req.userId,
+      { $set: update },
+      { new: true }
+    ).select('preferences');
+    res.json(user.preferences);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
 module.exports = router;
