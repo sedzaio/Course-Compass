@@ -6,6 +6,36 @@ const Assignment = require('../models/Assignment');
 const Course     = require('../models/Course');
 const auth       = require('../middleware/auth');
 
+// ─── Color palette (must stay in sync with frontend PALETTE) ─────────────────
+
+const COURSE_PALETTE = [
+  '#81A6C6', // sky
+  '#4EADAA', // teal
+  '#6B9E78', // sage
+  '#7BBFA5', // mint
+  '#9B8EC4', // lavender
+  '#C47E8E', // rose
+  '#C97E6A', // coral
+  '#C9A050', // amber
+  '#B8A040', // gold
+  '#7A8FA6', // slate
+  '#8E6A9B', // plum
+  '#8A7BA8', // dusk
+];
+
+/**
+ * Pick the first palette color not already used by any of the user's courses.
+ * Falls back to cycling through the palette when all 12 slots are taken.
+ */
+async function pickUniqueColor(userId) {
+  const existing = await Course.find({ userId }).select('color').lean();
+  const used = new Set(existing.map(c => (c.color || '').toLowerCase()));
+  const free = COURSE_PALETTE.find(p => !used.has(p.toLowerCase()));
+  if (free) return free;
+  // All palette slots taken — cycle by total course count
+  return COURSE_PALETTE[existing.length % COURSE_PALETTE.length];
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function computeNextSync(from, frequency) {
@@ -54,6 +84,8 @@ async function runSync(user) {
 
     let localCourse = await Course.findOne({ userId: user._id, canvasId: String(cc.id) });
     if (!localCourse) {
+      // Assign a unique color — never let it fall back to the model default
+      const color = await pickUniqueColor(user._id);
       localCourse = await Course.create({
         userId:     user._id,
         title:      cc.name,
@@ -61,12 +93,19 @@ async function runSync(user) {
         canvasId:   String(cc.id),
         instructor: instructor || '',
         semester:   semester || '',
+        color,
       });
     } else {
       let changed = false;
       if (localCourse.title !== cc.name)                        { localCourse.title = cc.name;           changed = true; }
       if (instructor && localCourse.instructor !== instructor)  { localCourse.instructor = instructor;   changed = true; }
       if (semester   && localCourse.semester   !== semester)    { localCourse.semester   = semester;     changed = true; }
+      // If the existing course still has the default color (was imported before
+      // this fix), upgrade it to a unique palette color now.
+      if (localCourse.color === '#81A6C6' || !localCourse.color) {
+        localCourse.color = await pickUniqueColor(user._id);
+        changed = true;
+      }
       if (changed) await localCourse.save();
     }
     courseIdMap[cc.id] = localCourse._id;
@@ -88,7 +127,7 @@ async function runSync(user) {
     }
 
     // Fetch submissions to mirror Canvas completion state
-    const submissionsMap = {};   // ← plain JS object, no TS syntax
+    const submissionsMap = {};
     try {
       const subs = await fetchAllPages(
         `${baseUrl}/api/v1/courses/${cc.id}/students/submissions?per_page=100&student_ids[]=self`,
