@@ -35,17 +35,21 @@ const assignmentSchema = new mongoose.Schema({
     default: 'assignment'
   },
   estimatedTime: {
-    type: Number, 
+    type: Number,
     default: null
+  },
+  aiGenerated: {
+    type: Boolean,
+    default: false
   },
   canvasId: {
     type: String,
     default: null
   },
   canvasUrl: {
-  type: String,
-  default: null,
-},
+    type: String,
+    default: null
+  },
   source: {
     type: String,
     enum: ['manual', 'canvas'],
