@@ -137,7 +137,7 @@ router.post('/reset-password', async (req, res) => {
 // PUT /api/auth/account  { name? } | { email, code } | { newPassword }
 router.put('/account', auth, async (req, res) => {
   try {
-    const { name, email, code, newPassword } = req.body;
+    const { name, email, code, currentPassword, newPassword } = req.body;
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
@@ -168,7 +168,10 @@ router.put('/account', auth, async (req, res) => {
 
     // --- update password ---
     if (newPassword) {
-      if (newPassword.length < 6) return res.status(400).json({ message: 'Password must be at least 6 characters' });
+      if (!currentPassword) return res.status(400).json({ message: 'Current password is required.' });
+      const match = await bcrypt.compare(currentPassword, user.password);
+      if (!match) return res.status(401).json({ message: 'Current password is incorrect.' });
+      if (newPassword.length < 6) return res.status(400).json({ message: 'Password must be at least 6 characters.' });
       user.password = await bcrypt.hash(newPassword, 10);
     }
 
@@ -208,6 +211,22 @@ router.put('/preferences', auth, async (req, res) => {
       { new: true }
     ).select('preferences');
     res.json(user.preferences);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// DELETE /api/auth/account  { password }
+router.delete('/account', auth, async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ message: 'Password is required.' });
+    const user = await User.findById(req.userId);
+    if (!user) return res.status(404).json({ message: 'User not found.' });
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(401).json({ message: 'Incorrect password.' });
+    await User.deleteOne({ _id: user._id });
+    res.json({ message: 'Account closed.' });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
