@@ -3,7 +3,10 @@ const router  = express.Router();
 const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
-const User    = require('../models/User');
+const User              = require('../models/User');
+const Course            = require('../models/Course');
+const Assignment        = require('../models/Assignment');
+const CanvasIntegration = require('../models/CanvasIntegration');
 const auth    = require('../middleware/auth');
 
 const transporter = nodemailer.createTransport({
@@ -27,7 +30,6 @@ router.post('/send-code', async (req, res) => {
 
     const code = genCode();
 
-    // FIX: was returnDocument: 'after' (invalid in Mongoose) — use { new: true }
     await User.findOneAndUpdate(
       { email },
       { verifyCode: code, isVerified: false },
@@ -134,7 +136,7 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
-// PUT /api/auth/account  { name? } | { email, code } | { newPassword }
+// PUT /api/auth/account  { name? } | { email, code } | { currentPassword, newPassword }
 router.put('/account', auth, async (req, res) => {
   try {
     const { name, email, code, currentPassword, newPassword } = req.body;
@@ -149,18 +151,15 @@ router.put('/account', auth, async (req, res) => {
     // --- update email (requires verification code) ---
     if (email && email.trim()) {
       if (!code) return res.status(400).json({ message: 'Verification code is required to change email' });
-      // The code was stored on the NEW email's temp user record via /send-code
       const tempRecord = await User.findOne({ email: email.trim() });
       if (!tempRecord || tempRecord.verifyCode !== code) {
         return res.status(400).json({ message: 'Invalid or expired verification code' });
       }
-      // Make sure the new email isn't taken by a real account
       const taken = await User.findOne({ email: email.trim(), name: { $exists: true, $ne: '' } });
       if (taken && taken._id.toString() !== user._id.toString()) {
         return res.status(400).json({ message: 'Email already in use' });
       }
       user.email = email.trim();
-      // clean up temp record if it's a different document
       if (tempRecord._id.toString() !== user._id.toString()) {
         await User.deleteOne({ _id: tempRecord._id });
       }
@@ -181,6 +180,8 @@ router.put('/account', auth, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
+
+// GET /api/auth/preferences
 router.get('/preferences', auth, async (req, res) => {
   try {
     const user = await User.findById(req.userId).select('preferences');
@@ -221,14 +222,26 @@ router.delete('/account', auth, async (req, res) => {
   try {
     const { password } = req.body;
     if (!password) return res.status(400).json({ message: 'Password is required.' });
+
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ message: 'User not found.' });
+
     const match = await bcrypt.compare(password, user.password);
     if (!match) return res.status(401).json({ message: 'Incorrect password.' });
+
+    // Delete all user data before removing the account
+    await Promise.all([
+      Course.deleteMany({ userId: user._id }),
+      Assignment.deleteMany({ userId: user._id }),
+      CanvasIntegration.deleteMany({ userId: user._id }),
+    ]);
+
     await User.deleteOne({ _id: user._id });
-    res.json({ message: 'Account closed.' });
+
+    res.json({ message: 'Account and all associated data have been deleted.' });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
+
 module.exports = router;
