@@ -1,14 +1,11 @@
-const express              = require('express');
-const router               = express.Router();
-const Assignment           = require('../models/Assignment');
-const auth                 = require('../middleware/auth');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const express    = require('express');
+const router     = express.Router();
+const axios      = require('axios');
+const Assignment = require('../models/Assignment');
+const auth       = require('../middleware/auth');
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
-// ─── Helper: snap raw hours to nearest quarter (0, 0.25, 0.5, 0.75) ──────────
+// ─── Helper: snap raw hours to nearest quarter (0.25 increments) ──────────────
 function snapToQuarter(hours) {
-  // Minimum 0.25h (15 min), maximum 24h
   const clamped = Math.min(Math.max(hours, 0.25), 24);
   return Math.round(clamped * 4) / 4;
 }
@@ -76,8 +73,7 @@ router.put('/:id', auth, async (req, res) => {
     if ('estimatedTime' in update) {
       update.estimatedTime = update.estimatedTime != null
         ? Number(update.estimatedTime) : null;
-      // Manual edit clears the AI flag
-      update.aiGenerated = false;
+      update.aiGenerated = false; // manual edit clears AI flag
     }
 
     const assignment = await Assignment.findOneAndUpdate(
@@ -106,8 +102,8 @@ router.delete('/:id', auth, async (req, res) => {
   }
 });
 
-// ─── POST /api/assignments/:id/estimate ──────────────────────────────────────
-// Calls Gemini to estimate completion time for one assignment.
+// ─── POST /api/assignments/:id/estimate ───────────────────────────────────────
+// Uses Groq (llama-3.1-8b-instant) — free, no billing needed.
 // Returns estimatedTime snapped to nearest 0.25h and aiGenerated: true.
 router.post('/:id/estimate', auth, async (req, res) => {
   try {
@@ -132,16 +128,27 @@ router.post('/:id/estimate', auth, async (req, res) => {
       `Type: ${type}\n` +
       `Description: ${description}`;
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    const result = await model.generateContent(prompt);
-    const raw    = result.response.text().trim();
+    const groqRes = await axios.post(
+      'https://api.groq.com/openai/v1/chat/completions',
+      {
+        model:       'llama-3.1-8b-instant',
+        messages:    [{ role: 'user', content: prompt }],
+        max_tokens:  10,
+        temperature: 0.1,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          'Content-Type': 'application/json',
+        }
+      }
+    );
+
+    const raw    = groqRes.data.choices[0].message.content.trim();
     const parsed = parseFloat(raw);
 
     if (isNaN(parsed) || parsed <= 0) {
-      return res.status(422).json({
-        message: 'AI returned an unreadable estimate.',
-        raw
-      });
+      return res.status(422).json({ message: 'AI returned unreadable estimate.', raw });
     }
 
     const estimatedTime = snapToQuarter(parsed);
