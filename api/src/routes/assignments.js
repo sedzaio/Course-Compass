@@ -4,7 +4,6 @@ const axios      = require('axios');
 const Assignment = require('../models/Assignment');
 const auth       = require('../middleware/auth');
 
-// ─── Helper: snap raw hours to nearest quarter (0.25 increments) ──────────────
 function snapToQuarter(hours) {
   const clamped = Math.min(Math.max(hours, 0.25), 24);
   return Math.round(clamped * 4) / 4;
@@ -103,8 +102,6 @@ router.delete('/:id', auth, async (req, res) => {
 });
 
 // ─── POST /api/assignments/:id/estimate ───────────────────────────────────────
-// Uses Groq (llama-3.1-8b-instant) — free, no billing needed.
-// Returns estimatedTime snapped to nearest 0.25h and aiGenerated: true.
 router.post('/:id/estimate', auth, async (req, res) => {
   try {
     const assignment = await Assignment.findOne({
@@ -125,7 +122,6 @@ router.post('/:id/estimate', auth, async (req, res) => {
       `Round to the nearest quarter hour (e.g. 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3).\n` +
       `Do not include any text, units, or explanation — just the number.\n\n` +
       `Title: ${title}\n` +
-      `Type: ${type}\n` +
       `Description: ${description}`;
 
     const groqRes = await axios.post(
