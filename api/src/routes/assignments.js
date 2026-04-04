@@ -1,4 +1,3 @@
-// api/src/routes/assignments.js
 const express    = require('express');
 const router     = express.Router();
 const Assignment = require('../models/Assignment');
@@ -9,7 +8,7 @@ router.get('/', auth, async (req, res) => {
   try {
     const assignments = await Assignment
       .find({ userId: req.userId })
-      .populate('courseId', 'name color')
+      .populate('courseId', '_id title code color')   // ← was: 'name color' (Course has no 'name' field)
       .sort({ dueDate: 1 });
     res.json(assignments);
   } catch (err) {
@@ -22,7 +21,7 @@ router.get('/course/:courseId', auth, async (req, res) => {
   try {
     const assignments = await Assignment
       .find({ userId: req.userId, courseId: req.params.courseId })
-      .populate('courseId', 'name color')
+      .populate('courseId', '_id title code color')   // ← same fix
       .sort({ dueDate: 1 });
     res.json(assignments);
   } catch (err) {
@@ -46,7 +45,7 @@ router.post('/', auth, async (req, res) => {
       source:        'manual'
     });
     await assignment.save();
-    await assignment.populate('courseId', 'name color');
+    await assignment.populate('courseId', '_id title code color');  // ← same fix
     res.status(201).json(assignment);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -72,7 +71,7 @@ router.put('/:id', auth, async (req, res) => {
       { _id: req.params.id, userId: req.userId },
       update,
       { new: true }
-    ).populate('courseId', 'name color');
+    ).populate('courseId', '_id title code color');  // ← same fix
 
     if (!assignment) return res.status(404).json({ message: 'Assignment not found' });
     res.json(assignment);

@@ -275,7 +275,7 @@ router.post('/sync', auth, async (req, res) => {
     if (!user || !user.canvasToken)
       return res.status(400).json({ message: 'Canvas not connected. Add your token in Settings first.' });
 
-    const synced   = await runSync(user);
+    const count    = await runSync(user);          // ← renamed synced → count
     const now      = new Date();
     const freq     = user.canvasSyncFrequency || 'weekly';
     const nextSync = computeNextSync(now, freq);
@@ -285,13 +285,12 @@ router.post('/sync', auth, async (req, res) => {
       canvasNextSync: nextSync,
     });
 
-    res.json({ message: 'Sync complete.', synced, lastSync: now, nextSync });
+    res.json({ message: 'Sync complete.', count, synced: count, lastSync: now, nextSync });
   } catch (err) {
     console.error('[canvas sync]', err);
     res.status(500).json({ message: 'Sync failed', error: err.message });
   }
 });
-
 // ─── POST /api/canvas/check-sync ─────────────────────────────────────────────
 
 router.post('/check-sync', auth, async (req, res) => {
