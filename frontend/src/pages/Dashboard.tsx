@@ -87,6 +87,33 @@ function formatDue(dueDate: string): string {
   return `Due: ${isMidnight ? date : `${date} at ${time}`}`;
 }
 
+/**
+ * Convert a UTC ISO string (from the DB) into a value suitable for
+ * <input type="datetime-local"> — i.e. local time, no timezone suffix.
+ */
+function utcToLocalInput(utcString?: string | null): string {
+  if (!utcString) return "";
+  const d = new Date(utcString);
+  if (isNaN(d.getTime())) return "";
+  const year  = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day   = String(d.getDate()).padStart(2, "0");
+  const hours = String(d.getHours()).padStart(2, "0");
+  const mins  = String(d.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${mins}`;
+}
+
+/**
+ * Convert a datetime-local input value (local time, no timezone) to a
+ * UTC ISO string for the API. Returns undefined if empty.
+ */
+function localInputToUtc(value?: string): string | undefined {
+  if (!value) return undefined;
+  const d = new Date(value); // browser treats no-tz string as local time
+  if (isNaN(d.getTime())) return undefined;
+  return d.toISOString();
+}
+
 /** Extract a short course code (max 7 chars). */
 function extractCourseCode(course?: Course | Assignment["courseId"]): string {
   if (!course) return "";
@@ -365,7 +392,8 @@ export default function Dashboard(): JSX.Element {
     }
     setForm({
       title: a.title || "",
-      dueDate: a.dueDate ? new Date(a.dueDate).toISOString().slice(0,16) : "",
+      // ✅ Convert UTC → local time for the datetime-local input
+      dueDate: utcToLocalInput(a.dueDate),
       courseId: a.courseId?._id || "",
       description: a.description || "",
       type: a.type || "assignment",
@@ -395,8 +423,11 @@ export default function Dashboard(): JSX.Element {
     const h = { Authorization: `Bearer ${token}` };
     const estimatedTime = formToEstimatedTime(form.estHrs, form.estMins);
     const payload = {
-      title: form.title.trim(), dueDate: form.dueDate || undefined,
-      courseId: form.courseId || null, description: form.description.trim() || undefined,
+      title: form.title.trim(),
+      // ✅ Convert local datetime-local value → UTC ISO string before sending to API
+      dueDate: localInputToUtc(form.dueDate),
+      courseId: form.courseId || null,
+      description: form.description.trim() || undefined,
       type: form.type,
       estimatedTime: estimatedTime !== undefined ? estimatedTime : null,
     };
