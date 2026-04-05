@@ -35,8 +35,8 @@ router.put('/preferences', auth, async (req, res) => {
     // Validate maxSessionHours if provided
     if (maxSessionHours !== undefined && maxSessionHours !== null) {
       const m = Number(maxSessionHours);
-      if (isNaN(m) || m <= 0 || m > 23.75) {
-        return res.status(400).json({ message: 'Max session must be between 0:15 and 23:45.' });
+      if (isNaN(m) || m < 1 || m > 23) {
+        return res.status(400).json({ message: 'Max session must be between 1 and 23 hours.' });
       }
     }
 
@@ -59,21 +59,35 @@ router.put('/preferences', auth, async (req, res) => {
           return res.status(400).json({ message: 'Each availability block must have from and to times.' });
         }
         if (block.from >= block.to) {
-          return res.status(400).json({ message: `Block for ${block.day}: "from" must be before "to".` });
+          return res.status(400).json({ message: `${block.day}: start time must be before end time.` });
         }
       }
     }
 
-    const update = {};
-    if (availability    !== undefined) update['studyPlanner.availability']    = availability;
-    if (bufferHours     !== undefined) update['studyPlanner.bufferHours']     = Number(bufferHours);
-    if (maxSessionHours !== undefined) update['studyPlanner.maxSessionHours'] = maxSessionHours === null ? null : Number(maxSessionHours);
-    if (breakMinutes    !== undefined) update['studyPlanner.breakMinutes']    = Number(breakMinutes);
+    // Build update using $set / $unset to avoid runValidators issues on subdocuments
+    const setFields  = {};
+    const unsetFields = {};
+
+    if (availability    !== undefined) setFields['studyPlanner.availability']    = availability;
+    if (bufferHours     !== undefined) setFields['studyPlanner.bufferHours']     = Number(bufferHours);
+    if (breakMinutes    !== undefined) setFields['studyPlanner.breakMinutes']    = Number(breakMinutes);
+
+    if (maxSessionHours !== undefined) {
+      if (maxSessionHours === null) {
+        unsetFields['studyPlanner.maxSessionHours'] = '';
+      } else {
+        setFields['studyPlanner.maxSessionHours'] = Number(maxSessionHours);
+      }
+    }
+
+    const mongoOp = {};
+    if (Object.keys(setFields).length)   mongoOp.$set   = setFields;
+    if (Object.keys(unsetFields).length) mongoOp.$unset = unsetFields;
 
     const user = await User.findByIdAndUpdate(
       req.user.id,
-      { $set: update },
-      { new: true, runValidators: true }
+      mongoOp,
+      { new: true }
     ).select('studyPlanner');
 
     res.json({ studyPlanner: user.studyPlanner });
