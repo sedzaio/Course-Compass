@@ -27,50 +27,44 @@ router.put('/preferences', auth, async (req, res) => {
     // Validate bufferHours
     if (bufferHours !== undefined) {
       const b = Number(bufferHours);
-      if (isNaN(b) || b < 1) {
+      if (isNaN(b) || b < 1)
         return res.status(400).json({ message: 'Buffer must be at least 1 hour.' });
-      }
     }
 
-    // Validate maxSessionHours if provided
+    // Validate maxSessionHours
     if (maxSessionHours !== undefined && maxSessionHours !== null) {
       const m = Number(maxSessionHours);
-      if (isNaN(m) || m < 1 || m > 23) {
+      if (isNaN(m) || m < 1 || m > 23)
         return res.status(400).json({ message: 'Max session must be between 1 and 23 hours.' });
-      }
     }
 
     // Validate breakMinutes
     if (breakMinutes !== undefined) {
       const allowed = [0, 15, 30, 45, 60];
-      if (!allowed.includes(Number(breakMinutes))) {
+      if (!allowed.includes(Number(breakMinutes)))
         return res.status(400).json({ message: 'Break minutes must be 0, 15, 30, 45, or 60.' });
-      }
     }
 
     // Validate availability blocks
     if (availability !== undefined) {
       const days = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
       for (const block of availability) {
-        if (!days.includes(block.day)) {
+        if (!days.includes(block.day))
           return res.status(400).json({ message: `Invalid day: ${block.day}` });
-        }
-        if (!block.from || !block.to) {
+        if (!block.from || !block.to)
           return res.status(400).json({ message: 'Each availability block must have from and to times.' });
-        }
-        if (block.from >= block.to) {
+        if (block.from >= block.to)
           return res.status(400).json({ message: `${block.day}: start time must be before end time.` });
-        }
       }
     }
 
-    // Build update using $set / $unset to avoid runValidators issues on subdocuments
-    const setFields  = {};
+    // Build $set / $unset
+    const setFields   = {};
     const unsetFields = {};
 
-    if (availability    !== undefined) setFields['studyPlanner.availability']    = availability;
-    if (bufferHours     !== undefined) setFields['studyPlanner.bufferHours']     = Number(bufferHours);
-    if (breakMinutes    !== undefined) setFields['studyPlanner.breakMinutes']    = Number(breakMinutes);
+    if (availability  !== undefined) setFields['studyPlanner.availability']  = availability;
+    if (bufferHours   !== undefined) setFields['studyPlanner.bufferHours']   = Number(bufferHours);
+    if (breakMinutes  !== undefined) setFields['studyPlanner.breakMinutes']  = Number(breakMinutes);
 
     if (maxSessionHours !== undefined) {
       if (maxSessionHours === null) {
@@ -78,6 +72,12 @@ router.put('/preferences', auth, async (req, res) => {
       } else {
         setFields['studyPlanner.maxSessionHours'] = Number(maxSessionHours);
       }
+    }
+
+    // ✅ FIX: if nothing to update, return current data instead of crashing
+    if (!Object.keys(setFields).length && !Object.keys(unsetFields).length) {
+      const current = await User.findById(req.user.id).select('studyPlanner');
+      return res.json({ studyPlanner: current?.studyPlanner || {} });
     }
 
     const mongoOp = {};
@@ -89,6 +89,9 @@ router.put('/preferences', auth, async (req, res) => {
       mongoOp,
       { new: true }
     ).select('studyPlanner');
+
+    // ✅ FIX: guard against null user
+    if (!user) return res.status(404).json({ message: 'User not found.' });
 
     res.json({ studyPlanner: user.studyPlanner });
   } catch (err) {
