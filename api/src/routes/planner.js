@@ -6,11 +6,11 @@ const User     = require('../models/User');
 // ── GET /planner/preferences ──────────────────────────────────────────────────
 router.get('/preferences', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select('studyPlanner preferences');
+    const user = await User.findById(req.userId).select('studyPlanner preferences'); // ✅ req.userId
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     res.json({
-      studyPlanner: user.studyPlanner || {},
+      studyPlanner:   user.studyPlanner || {},
       firstDayOfWeek: user.preferences?.firstDayOfWeek || 'sunday',
     });
   } catch (err) {
@@ -24,28 +24,24 @@ router.put('/preferences', auth, async (req, res) => {
   try {
     const { availability, bufferHours, maxSessionHours, breakMinutes } = req.body;
 
-    // Validate bufferHours
     if (bufferHours !== undefined) {
       const b = Number(bufferHours);
       if (isNaN(b) || b < 1)
         return res.status(400).json({ message: 'Buffer must be at least 1 hour.' });
     }
 
-    // Validate maxSessionHours
     if (maxSessionHours !== undefined && maxSessionHours !== null) {
       const m = Number(maxSessionHours);
       if (isNaN(m) || m < 1 || m > 23)
         return res.status(400).json({ message: 'Max session must be between 1 and 23 hours.' });
     }
 
-    // Validate breakMinutes
     if (breakMinutes !== undefined) {
       const allowed = [0, 15, 30, 45, 60];
       if (!allowed.includes(Number(breakMinutes)))
         return res.status(400).json({ message: 'Break minutes must be 0, 15, 30, 45, or 60.' });
     }
 
-    // Validate availability blocks
     if (availability !== undefined) {
       const days = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
       for (const block of availability) {
@@ -58,7 +54,6 @@ router.put('/preferences', auth, async (req, res) => {
       }
     }
 
-    // Build $set / $unset
     const setFields   = {};
     const unsetFields = {};
 
@@ -74,9 +69,8 @@ router.put('/preferences', auth, async (req, res) => {
       }
     }
 
-    // ✅ FIX: if nothing to update, return current data instead of crashing
     if (!Object.keys(setFields).length && !Object.keys(unsetFields).length) {
-      const current = await User.findById(req.user.id).select('studyPlanner');
+      const current = await User.findById(req.userId).select('studyPlanner'); // ✅ req.userId
       return res.json({ studyPlanner: current?.studyPlanner || {} });
     }
 
@@ -85,12 +79,11 @@ router.put('/preferences', auth, async (req, res) => {
     if (Object.keys(unsetFields).length) mongoOp.$unset = unsetFields;
 
     const user = await User.findByIdAndUpdate(
-      req.user.id,
+      req.userId,  // ✅ req.userId
       mongoOp,
       { new: true }
     ).select('studyPlanner');
 
-    // ✅ FIX: guard against null user
     if (!user) return res.status(404).json({ message: 'User not found.' });
 
     res.json({ studyPlanner: user.studyPlanner });
