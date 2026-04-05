@@ -18,6 +18,20 @@ const userSchema = new mongoose.Schema({
   preferences: {
     firstDayOfWeek: { type: String, enum: ['sunday', 'monday'], default: 'sunday' },
     theme:          { type: String, enum: ['light', 'dark', 'system'], default: 'light' },
+  },
+
+  // Study planner preferences
+  studyPlanner: {
+    availability: [
+      {
+        day:  { type: String },
+        from: { type: String },
+        to:   { type: String },
+      }
+    ],
+    bufferHours:     { type: Number, default: 24, min: 1 },
+    maxSessionHours: { type: Number, default: null },
+    breakMinutes:    { type: Number, default: 0 },
   }
 
 }, { timestamps: true });
