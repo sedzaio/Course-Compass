@@ -32,34 +32,6 @@ function getSchedulingWindow(dueDate, advanceDays, bufferHours) {
   return { earliest, latest };
 }
 
-// FIX A: Given a date string + availability blocks, return array of free {from, to} slots
-// after removing already-used intervals. Returns minutes of free time too.
-function getFreeSlotsForDay(dateStr, dayName, availability, usedIntervals) {
-  const blocks = availability.filter(b => b.day === dayName);
-  const result = [];
-  for (const block of blocks) {
-    const [bfh, bfm] = block.from.split(':').map(Number);
-    const [bth, btm] = block.to.split(':').map(Number);
-    let blockStart = bfh * 60 + bfm;
-    const blockEnd = bth * 60 + btm;
-
-    // Collect used intervals on this day that overlap this block, sorted
-    const used = (usedIntervals[dateStr] || [])
-      .filter(u => u.end > blockStart && u.start < blockEnd)
-      .sort((a, b) => a.start - b.start);
-
-    let cursor = blockStart;
-    for (const u of used) {
-      if (u.start > cursor) {
-        result.push({ start: cursor, end: Math.min(u.start, blockEnd) });
-      }
-      cursor = Math.max(cursor, u.end);
-    }
-    if (cursor < blockEnd) result.push({ start: cursor, end: blockEnd });
-  }
-  return result.filter(s => s.end > s.start);
-}
-
 function minsToTime(mins) {
   return `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
 }
@@ -176,17 +148,28 @@ router.post('/generate', auth, async (req, res) => {
       return res.status(400).json({ message: 'No availability set. Please configure your study planner settings.' });
     }
 
-    // ── Resolve this week ────────────────────────────────────────────────────
+    // ── Resolve the target week ───────────────────────────────────────────────
+    // Today is always the real server date — used for "past date" filtering.
+    // weekStart is the week the frontend is requesting (may be a future week).
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
     const todayStr = toDateStr(today);
 
-    const weekStart    = getWeekStart(today, firstDay);
+    // Use the weekStart sent by the frontend; fall back to the current week.
+    const weekStart = req.body.weekStart
+      ? (() => { const d = new Date(req.body.weekStart + 'T00:00:00.000Z'); d.setUTCHours(0,0,0,0); return d; })()
+      : getWeekStart(today, firstDay);
+
     const weekStartStr = toDateStr(weekStart);
     const weekEnd      = new Date(weekStart);
     weekEnd.setUTCDate(weekEnd.getUTCDate() + 6);
     weekEnd.setUTCHours(23, 59, 59, 999);
-    const weekEndStr = toDateStr(weekEnd);
+    const weekEndStr   = toDateStr(weekEnd);
+
+    // The earliest day in this week we'll actually schedule sessions on:
+    // for the current week it's today; for future weeks it's weekStart itself.
+    const scheduleFromDate = weekStart > today ? weekStart : today;
+    const scheduleFromStr  = toDateStr(scheduleFromDate);
 
     // ── Fetch incomplete assignments ─────────────────────────────────────────
     const allAssignments = await Assignment.find({
@@ -196,23 +179,24 @@ router.post('/generate', auth, async (req, res) => {
     }).sort({ dueDate: 1 });
 
     // ── Filter: window must overlap this week ────────────────────────────────
-    const eligible      = [];
+    const eligible       = [];
     const preUnscheduled = [];
 
     for (const a of allAssignments) {
       const win = getSchedulingWindow(a.dueDate, advanceDays, bufferHours);
       if (!win) continue;
 
-      // FIX D: Overdue tasks — only show in unscheduled for CURRENT week
+      // Overdue tasks — only show in unscheduled for the CURRENT week
       if (win.latest < today) {
-        if (weekStartStr === toDateStr(getWeekStart(today, firstDay))) {
+        const currentWeekStart = getWeekStart(today, firstDay);
+        if (weekStartStr === toDateStr(currentWeekStart)) {
           preUnscheduled.push({
             assignmentId: a._id.toString(),
             title:        a.title,
             reason:       `Deadline has passed — latest scheduling time was ${toDateStr(win.latest)}.`,
           });
         }
-        continue; // never include in future weeks at all
+        continue;
       }
 
       if (win.earliest > weekEnd)  continue;
@@ -225,7 +209,7 @@ router.post('/generate', auth, async (req, res) => {
       return res.json({ sessions: [], warnings: [], unscheduled: preUnscheduled, weekStart: weekStartStr });
     }
 
-    // ── Already-scheduled hours from previous weeks ──────────────────────────
+    // ── Already-scheduled hours from ALL weeks before this one ───────────────
     const previousPlans = await StudyPlan.find({
       userId:    req.userId,
       weekStart: { $lt: weekStartStr },
@@ -261,7 +245,7 @@ router.post('/generate', auth, async (req, res) => {
       if (a.estimatedTime == null) a.estimatedTime = 1;
     }
 
-    // ── Build assignment list ────────────────────────────────────────────────
+    // ── Build assignment list ─────────────────────────────────────────────────
     const assignmentList = [];
     const preWarnings    = [];
 
@@ -283,9 +267,11 @@ router.post('/generate', auth, async (req, res) => {
 
       if (remainingHours === 0) continue;
 
+      // Clamp the window to this week's bounds
       const clampedEarliest = new Date(Math.max(win.earliest.getTime(), weekStart.getTime()));
       const clampedLatest   = new Date(Math.min(win.latest.getTime(),   weekEnd.getTime()));
-      const effectiveFrom   = new Date(Math.max(clampedEarliest.getTime(), today.getTime()));
+      // For the current week: don't schedule in the past. For future weeks: weekStart is fine.
+      const effectiveFrom   = new Date(Math.max(clampedEarliest.getTime(), scheduleFromDate.getTime()));
       if (effectiveFrom > clampedLatest) continue;
 
       assignmentList.push({
@@ -306,17 +292,16 @@ router.post('/generate', auth, async (req, res) => {
       return res.json({ sessions: [], warnings: preWarnings, unscheduled: preUnscheduled, weekStart: weekStartStr });
     }
 
-    // ── FIX A+B: Compute exact free slots per day and pass to AI ─────────────
-    // This tells the AI precisely what time is available — no excuses for "no slots"
+    // ── Compute exact free slots per day for AI ───────────────────────────────
     const DAY_NAMES = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
 
-    // Build free slots map (no sessions placed yet — AI figures out packing)
     const freeSlotsPerDay = {};
     for (let i = 0; i <= 6; i++) {
       const dayDate = new Date(weekStart);
       dayDate.setUTCDate(weekStart.getUTCDate() + i);
       const dateStr = toDateStr(dayDate);
-      if (dateStr < todayStr) continue;
+      // Skip days before today (only applies to current week navigation)
+      if (dateStr < scheduleFromStr) continue;
       const dayName = DAY_NAMES[dayDate.getUTCDay()];
       const blocks  = availability.filter(b => b.day === dayName);
       if (!blocks.length) continue;
@@ -334,13 +319,14 @@ router.post('/generate', auth, async (req, res) => {
       if (totalMins > 0) freeSlotsPerDay[dateStr] = { slots, totalAvailableMinutes: totalMins };
     }
 
-    // ── AI payload ───────────────────────────────────────────────────────────
+    // ── AI payload ────────────────────────────────────────────────────────────
     const payload = {
       weekStart:     weekStartStr,
       weekEnd:       weekEndStr,
       todayDate:     todayStr,
+      scheduleFromDate: scheduleFromStr,   // earliest date to place sessions
       availability,
-      freeSlotsPerDay,  // exact free time per day — AI must use this
+      freeSlotsPerDay,
       preferences: {
         maxSessionHours: maxSessHours || 'Unlimited',
         breakMinutes:    breakMins,
@@ -357,7 +343,8 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
    A session from HH:mm to HH:mm must fit ENTIRELY within a single availability block.
    Example: block is 08:00–12:00. A 2h session starting 11:00 ends 13:00 — INVALID. Start at 10:00 instead.
 
-2. FUTURE DATES ONLY: Never schedule a session on a date before "todayDate".
+2. FUTURE DATES ONLY: Never schedule a session on a date before "scheduleFromDate".
+   For the current week this is today. For future weeks this is the weekStart date.
 
 3. SCHEDULING WINDOW:
    Each assignment has "scheduleFrom" (YYYY-MM-DD) and "scheduleTo" (YYYY-MM-DD).
@@ -410,7 +397,7 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
   ]
 }`;
 
-    // ── Call Groq ────────────────────────────────────────────────────────────
+    // ── Call Groq ─────────────────────────────────────────────────────────────
     const groqRes = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
       {
@@ -427,7 +414,7 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
 
     const plan = JSON.parse(groqRes.data.choices[0].message.content);
 
-    // ── Post-processing ──────────────────────────────────────────────────────
+    // ── Post-processing ───────────────────────────────────────────────────────
     const validAssignmentIds = new Set(assignmentList.map(a => a.id));
 
     const windowMap = {};
@@ -435,8 +422,7 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
       windowMap[a.id] = { from: a.scheduleFrom, latest: new Date(a.scheduleLatestTime) };
     }
 
-    // Build availability block end-time map per day for FIX A
-    // avail block end = latest "to" time across all blocks for that day
+    // Availability block bounds per date (for overflow validation)
     const availBlockEndByDay = {};
     for (let i = 0; i <= 6; i++) {
       const dayDate = new Date(weekStart);
@@ -445,7 +431,6 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
       const dayName = DAY_NAMES[dayDate.getUTCDay()];
       const blocks  = availability.filter(b => b.day === dayName);
       if (!blocks.length) continue;
-      // For each block, store its end time so we can validate individual sessions
       availBlockEndByDay[dateStr] = blocks.map(b => {
         const [th, tm] = b.to.split(':').map(Number);
         const [fh, fm] = b.from.split(':').map(Number);
@@ -457,11 +442,11 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
     const droppedHoursByAssignment = {};
 
     for (const s of (plan.sessions || [])) {
-      // Strip phantom
+      // Strip phantom IDs
       if (!validAssignmentIds.has(s.assignmentId)) continue;
 
-      // Strip past dates
-      if (s.date < todayStr) {
+      // Strip past dates (before scheduleFromDate)
+      if (s.date < scheduleFromStr) {
         droppedHoursByAssignment[s.assignmentId] = (droppedHoursByAssignment[s.assignmentId] || 0) + (s.hours || 0);
         continue;
       }
@@ -480,7 +465,7 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
         }
       }
 
-      // FIX A: Strip sessions that overflow their availability block
+      // Strip sessions that overflow their availability block
       const blocks = availBlockEndByDay[s.date] || [];
       const [sfh, sfm] = s.from.split(':').map(Number);
       const [sth, stm] = s.to.split(':').map(Number);
@@ -545,16 +530,15 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
     // Strip phantom unscheduled
     let aiUnscheduled = (plan.unscheduled || []).filter(u => validAssignmentIds.has(u.assignmentId));
 
-    // FIX C: Remove from unscheduled if it was actually fully scheduled (warnings+sessions)
+    // Remove from unscheduled if fully scheduled
     aiUnscheduled = aiUnscheduled.filter(u => {
       const scheduled = hoursScheduledByAssignment[u.assignmentId] || 0;
       const a = assignmentList.find(x => x.id === u.assignmentId);
       if (!a) return true;
-      return scheduled < a.remainingHours; // keep only truly unscheduled
+      return scheduled < a.remainingHours;
     });
 
-    // FIX C: Also deduplicate — remove from unscheduled if already in warnings
-    // (AI sometimes puts same item in both)
+    // Remove from unscheduled if already in warnings (AI sometimes puts same item in both)
     const warnedIds = new Set(aiWarnings.map(w => w.assignmentId));
     aiUnscheduled = aiUnscheduled.filter(u => !warnedIds.has(u.assignmentId));
 
