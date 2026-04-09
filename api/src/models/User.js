@@ -29,8 +29,9 @@ const userSchema = new mongoose.Schema({
         to:   { type: String },
       }
     ],
-    bufferHours:     { type: Number, default: 24 },   // no min:1
-    maxSessionHours: { type: Number },                // no default: null
+    bufferHours:     { type: Number, default: 24 },
+    advanceDays:     { type: Number, default: 7 },
+    maxSessionHours: { type: Number },
     breakMinutes:    { type: Number, default: 0 },
   }
 
