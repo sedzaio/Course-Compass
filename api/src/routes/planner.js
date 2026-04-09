@@ -165,13 +165,13 @@ router.post('/generate', auth, async (req, res) => {
 
     // ── Filter: window must overlap this week ────────────────────────────────
     const eligible = [];
-    const preUnscheduled = []; // FIX 1: overdue tasks caught before AI
+    const preUnscheduled = [];
 
     for (const a of allAssignments) {
       const win = getSchedulingWindow(a.dueDate, advanceDays, bufferHours);
       if (!win) continue;
 
-      // FIX 1: window already fully in the past → immediately unscheduled
+      // Window already fully in the past → immediately unscheduled
       if (win.latest < today) {
         preUnscheduled.push({
           assignmentId: a._id.toString(),
@@ -230,38 +230,35 @@ router.post('/generate', auth, async (req, res) => {
 
     // ── Build assignment list for AI ─────────────────────────────────────────
     const assignmentList = [];
-    const preWarnings = []; // FIX 4: over-scheduled from previous weeks
+    const preWarnings = [];
 
     for (const { assignment: a, window: win } of eligible) {
       const alreadyScheduled = scheduledHoursMap[a._id.toString()] || 0;
       const totalHours       = a.estimatedTime || 1;
       const remainingHours   = Math.round(Math.max(totalHours - alreadyScheduled, 0) * 4) / 4;
 
-      // FIX 4: already over-scheduled — warn and skip
+      // Already over-scheduled in previous weeks — warn and skip
       if (alreadyScheduled > totalHours) {
         preWarnings.push({
-          assignmentId:    a._id.toString(),
-          title:           a.title,
-          scheduledHours:  alreadyScheduled,
-          neededHours:     totalHours,
-          message:         `Over-scheduled by ${Math.round((alreadyScheduled - totalHours) * 4) / 4}h in previous weeks.`,
+          assignmentId:   a._id.toString(),
+          title:          a.title,
+          scheduledHours: alreadyScheduled,
+          neededHours:    totalHours,
+          message:        `Over-scheduled by ${Math.round((alreadyScheduled - totalHours) * 4) / 4}h in previous weeks.`,
         });
         continue;
       }
 
-      // FIX: skip if fully scheduled already
+      // Fully scheduled already — skip silently
       if (remainingHours === 0) continue;
 
       // Clamp window to this week
       const clampedEarliest = new Date(Math.max(win.earliest.getTime(), weekStart.getTime()));
       const clampedLatest   = new Date(Math.min(win.latest.getTime(),   weekEnd.getTime()));
 
-      // Extra clamp: don't schedule in the past
+      // Don't schedule in the past
       const effectiveFrom = new Date(Math.max(clampedEarliest.getTime(), today.getTime()));
-      if (effectiveFrom > clampedLatest) {
-        // No future slots this week for this assignment
-        continue;
-      }
+      if (effectiveFrom > clampedLatest) continue;
 
       assignmentList.push({
         id:                    a._id.toString(),
@@ -271,7 +268,7 @@ router.post('/generate', auth, async (req, res) => {
         totalHours,
         alreadyScheduledHours: alreadyScheduled,
         remainingHours,
-        scheduleFrom:          toDateStr(effectiveFrom),       // never before today
+        scheduleFrom:          toDateStr(effectiveFrom),
         scheduleTo:            toDateStr(clampedLatest),
         scheduleLatestTime:    win.latest.toISOString(),
       });
@@ -281,15 +278,13 @@ router.post('/generate', auth, async (req, res) => {
       return res.json({ sessions: [], warnings: preWarnings, unscheduled: preUnscheduled, weekStart: weekStartStr });
     }
 
-    // ── Build a per-day available minutes map to help the AI ─────────────────
-    // We tell the AI exactly how many minutes are free each day
+    // ── Per-day available minutes hint for AI ────────────────────────────────
     const DAY_NAMES = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
     const availableMinutesPerDay = {};
     for (let i = 0; i <= 6; i++) {
       const dayDate = new Date(weekStart);
       dayDate.setUTCDate(weekStart.getUTCDate() + i);
       const dateStr = toDateStr(dayDate);
-      // Skip past days
       if (dateStr < todayStr) continue;
       const dayName = DAY_NAMES[dayDate.getUTCDay()];
       const blocks  = availability.filter(b => b.day === dayName);
@@ -308,7 +303,7 @@ router.post('/generate', auth, async (req, res) => {
       weekEnd:    toDateStr(weekEnd),
       todayDate:  todayStr,
       availability,
-      availableMinutesPerDay, // bonus hint for AI
+      availableMinutesPerDay,
       preferences: {
         maxSessionHours: maxSessHours || 'Unlimited',
         breakMinutes:    breakMins,
@@ -408,10 +403,9 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
 
     const plan = JSON.parse(groqRes.data.choices[0].message.content);
 
-    // ── Build valid assignmentId set for post-filtering ──────────────────────
+    // ── Valid assignmentId set for post-filtering ────────────────────────────
     const validAssignmentIds = new Set(assignmentList.map(a => a.id));
 
-    // ── Post-process sessions ────────────────────────────────────────────────
     const windowMap = {};
     for (const a of assignmentList) {
       windowMap[a.id] = {
@@ -420,16 +414,17 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
       };
     }
 
-    const validSessions      = [];
-    const droppedHoursByAssignment = {};
+    // ── Post-process: filter invalid sessions ────────────────────────────────
+    const validSessions             = [];
+    const droppedHoursByAssignment  = {};
 
     for (const s of (plan.sessions || [])) {
-      // FIX 3: strip phantom entries — assignmentId must be in our list
+      // Strip phantom entries
       if (!validAssignmentIds.has(s.assignmentId)) continue;
 
       const w = windowMap[s.assignmentId];
 
-      // FIX 2: strip past-date sessions
+      // Strip past-date sessions
       if (s.date < todayStr) {
         droppedHoursByAssignment[s.assignmentId] = (droppedHoursByAssignment[s.assignmentId] || 0) + (s.hours || 0);
         continue;
@@ -451,7 +446,7 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
       validSessions.push({ ...s, completed: false, skipped: false });
     }
 
-    // ── FIX 4: enforce exact hours — clamp over-scheduled sessions ───────────
+    // ── Enforce exact hours per assignment ───────────────────────────────────
     const hoursScheduledByAssignment = {};
     const finalSessions = [];
 
@@ -459,15 +454,14 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
       const a = assignmentList.find(x => x.id === s.assignmentId);
       if (!a) { finalSessions.push(s); continue; }
 
-      const already = hoursScheduledByAssignment[s.assignmentId] || 0;
-      const remaining = Math.round((a.remainingHours - already) * 4) / 4;
+      const already    = hoursScheduledByAssignment[s.assignmentId] || 0;
+      const remaining  = Math.round((a.remainingHours - already) * 4) / 4;
 
-      if (remaining <= 0) continue; // already hit the cap — drop this session
+      if (remaining <= 0) continue;
 
       if (s.hours > remaining) {
-        // Clamp the session to exactly what's left
-        const [fh, fm] = s.from.split(':').map(Number);
-        const clampedMins = Math.round(remaining * 60);
+        const [fh, fm]     = s.from.split(':').map(Number);
+        const clampedMins  = Math.round(remaining * 60);
         const endTotalMins = fh * 60 + fm + clampedMins;
         const eh = Math.floor(endTotalMins / 60);
         const em = endTotalMins % 60;
@@ -481,7 +475,6 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
     }
 
     // ── Post-process warnings ────────────────────────────────────────────────
-    // FIX 3: strip phantom warnings; merge dropped-hours warnings
     const aiWarnings = (plan.warnings || []).filter(w => validAssignmentIds.has(w.assignmentId));
 
     for (const [assignmentId, droppedHours] of Object.entries(droppedHoursByAssignment)) {
@@ -494,24 +487,19 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
         aiWarnings.push({
           assignmentId,
           title:          a.title,
-          scheduledHours: (hoursScheduledByAssignment[assignmentId] || 0),
+          scheduledHours: hoursScheduledByAssignment[assignmentId] || 0,
           neededHours:    a.remainingHours,
           message:        `${droppedHours}h of sessions were outside the valid window or in the past and removed.`,
         });
       }
     }
 
-    // FIX 3: strip phantom unscheduled entries
     const aiUnscheduled = (plan.unscheduled || []).filter(u => validAssignmentIds.has(u.assignmentId));
-
-    // Merge with pre-detected overdue tasks
-    const finalWarnings     = [...preWarnings,     ...aiWarnings];
-    const finalUnscheduled  = [...preUnscheduled,  ...aiUnscheduled];
 
     res.json({
       sessions:    finalSessions,
-      warnings:    finalWarnings,
-      unscheduled: finalUnscheduled,
+      warnings:    [...preWarnings, ...aiWarnings],
+      unscheduled: [...preUnscheduled, ...aiUnscheduled],
       weekStart:   weekStartStr,
     });
 
@@ -530,7 +518,8 @@ router.post('/schedule', auth, async (req, res) => {
     const plan = await StudyPlan.findOneAndUpdate(
       { userId: req.userId, weekStart },
       {
-        userId, weekStart,
+        userId:      req.userId,   // ✅ fixed: was bare `userId` (ReferenceError)
+        weekStart,
         sessions,
         warnings:    warnings    || [],
         unscheduled: unscheduled || [],
