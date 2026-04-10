@@ -31,16 +31,13 @@ function parseDate(str) {
 function getWeekStart(date, firstDay = 'sunday') {
   const d   = new Date(date);
   d.setUTCHours(0, 0, 0, 0);
-  const day  = d.getUTCDay(); // 0=Sun … 6=Sat
+  const day  = d.getUTCDay();
   const diff = firstDay === 'monday' ? (day === 0 ? -6 : 1 - day) : -day;
   d.setUTCDate(d.getUTCDate() + diff);
   return d;
 }
 
-/**
- * Returns { earliest, latest } Date objects for when work on an assignment
- * may be scheduled.  Returns null when the window is empty.
- */
+/** Returns { earliest, latest } Date objects for when work may be scheduled. */
 function schedulingWindow(dueDate, advanceDays, bufferHours) {
   const due      = new Date(dueDate);
   const earliest = new Date(due.getTime() - advanceDays * 86_400_000);
@@ -62,6 +59,39 @@ function fromMins(mins) {
 
 /** Round to nearest quarter-hour (0.25 h) */
 function r4(n) { return Math.round(n * 4) / 4; }
+
+/**
+ * Upsert a study plan robustly — handles E11000 duplicate key by retrying
+ * with an explicit $set so Mongoose never tries to $setOnInsert a duplicate.
+ */
+async function upsertPlan(userId, weekStart, sessions, warnings, unscheduled) {
+  const update = {
+    $set: {
+      sessions,
+      warnings,
+      unscheduled,
+      generatedAt: new Date(),
+    },
+    $setOnInsert: { userId, weekStart },
+  };
+  try {
+    return await StudyPlan.findOneAndUpdate(
+      { userId, weekStart },
+      update,
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+  } catch (err) {
+    // E11000 can happen on concurrent upserts — retry once with a plain update
+    if (err.code === 11000) {
+      return await StudyPlan.findOneAndUpdate(
+        { userId, weekStart },
+        { $set: { sessions, warnings, unscheduled, generatedAt: new Date() } },
+        { new: true },
+      );
+    }
+    throw err;
+  }
+}
 
 // ─── GET /planner/preferences ─────────────────────────────────────────────────
 
@@ -155,12 +185,13 @@ router.put('/preferences', auth, async (req, res) => {
 //    6.  AI-estimate missing durations (Canvas tasks only)
 //    7.  Build assignmentMeta map + aiTasks list
 //    8.  Build per-date slot map
-//    9.  Call Groq with a very strict prompt
+//    9.  Call Groq with a strict prompt
 //   10.  Validate every AI session; discard invalid ones
-//   11.  Fill any remaining work deterministically (fallback scheduler)
+//   11.  Deterministic fallback — fill anything the AI missed
 //   12.  Enforce no-overlap + cap to remaining minutes
 //   13.  Compute warnings / unscheduled
-//   14.  Respond
+//   14.  Save plan to DB
+//   15.  Respond
 
 router.post('/generate', auth, async (req, res) => {
   try {
@@ -183,9 +214,7 @@ router.post('/generate', auth, async (req, res) => {
     // ── 2. Resolve target week ─────────────────────────────────────────────────
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
-    const todayStr = toDateStr(today);
 
-    // Use provided weekStart or fall back to the current week.
     const weekStart = req.body.weekStart
       ? parseDate(req.body.weekStart)
       : getWeekStart(today, firstDay);
@@ -216,7 +245,6 @@ router.post('/generate', auth, async (req, res) => {
       const win = schedulingWindow(a.dueDate, advanceDays, bufferHours);
       if (!win) continue;
 
-      // Overdue — window already closed
       if (win.latest <= today) {
         if (weekStartStr === currentWeekStartStr) {
           overdueUnscheduled.push({
@@ -228,14 +256,19 @@ router.post('/generate', auth, async (req, res) => {
         continue;
       }
 
-      // Window must overlap the target week
       if (win.earliest > weekEnd || win.latest < weekStart) continue;
-
       eligible.push({ a, win });
     }
 
-    if (!eligible.length)
-      return res.json({ sessions: [], warnings: [], unscheduled: overdueUnscheduled, weekStart: weekStartStr });
+    if (!eligible.length) {
+      const saved = await upsertPlan(req.userId, weekStartStr, [], [], overdueUnscheduled);
+      return res.json({
+        sessions:    saved.sessions    || [],
+        warnings:    saved.warnings    || [],
+        unscheduled: saved.unscheduled || [],
+        weekStart:   weekStartStr,
+      });
+    }
 
     // ── 5. Count hours already placed in PREVIOUS weeks (skip skipped) ────────
     const previousPlans = await StudyPlan.find({
@@ -275,7 +308,7 @@ router.post('/generate', auth, async (req, res) => {
             a.aiGenerated   = true;
             await a.save();
           }
-        } catch (_) { /* ignore — fall through to default */ }
+        } catch (_) { /* fall through to default */ }
       }
       if (a.estimatedTime == null) a.estimatedTime = 1;
     }
@@ -289,7 +322,6 @@ router.post('/generate', auth, async (req, res) => {
       const remaining = r4(Math.max((a.estimatedTime || 1) - done, 0));
       if (remaining <= 0) continue;
 
-      // Clamp window to [weekStart … weekEnd] and to scheduleFrom
       const clampedEarliest = new Date(Math.max(win.earliest.getTime(), weekStart.getTime()));
       const clampedLatest   = new Date(Math.min(win.latest.getTime(),   weekEnd.getTime()));
       const effectiveFrom   = new Date(Math.max(clampedEarliest.getTime(), scheduleFrom.getTime()));
@@ -320,8 +352,15 @@ router.post('/generate', auth, async (req, res) => {
       });
     }
 
-    if (!aiTasks.length)
-      return res.json({ sessions: [], warnings: [], unscheduled: overdueUnscheduled, weekStart: weekStartStr });
+    if (!aiTasks.length) {
+      const saved = await upsertPlan(req.userId, weekStartStr, [], [], overdueUnscheduled);
+      return res.json({
+        sessions:    saved.sessions    || [],
+        warnings:    saved.warnings    || [],
+        unscheduled: saved.unscheduled || [],
+        weekStart:   weekStartStr,
+      });
+    }
 
     // ── 8. Build per-date slot map ────────────────────────────────────────────
     const dailySlots = {};
@@ -335,15 +374,19 @@ router.post('/generate', auth, async (req, res) => {
       if (blocks.length) dailySlots[dateStr] = blocks.map(b => ({ from: b.from, to: b.to }));
     }
 
-    if (!Object.keys(dailySlots).length)
-      return res.json({ sessions: [], warnings: [], unscheduled: overdueUnscheduled, weekStart: weekStartStr });
+    if (!Object.keys(dailySlots).length) {
+      const saved = await upsertPlan(req.userId, weekStartStr, [], [], overdueUnscheduled);
+      return res.json({
+        sessions:    saved.sessions    || [],
+        warnings:    saved.warnings    || [],
+        unscheduled: saved.unscheduled || overdueUnscheduled,
+        weekStart:   weekStartStr,
+      });
+    }
 
     // ── 9. AI prompt + call ───────────────────────────────────────────────────
-
-    const totalAvailMins = Object.values(dailySlots)
-      .flat()
-      .reduce((sum, b) => sum + toMins(b.to) - toMins(b.from), 0);
-    const totalNeededMins = aiTasks.reduce((sum, t) => sum + Math.round(t.hours * 60), 0);
+    const totalAvailMins  = Object.values(dailySlots).flat().reduce((s, b) => s + toMins(b.to) - toMins(b.from), 0);
+    const totalNeededMins = aiTasks.reduce((s, t) => s + Math.round(t.hours * 60), 0);
 
     const systemPrompt = `\
 You are a deterministic study-session scheduler. Your ONLY output is a single JSON object.
@@ -352,73 +395,45 @@ DO NOT include markdown fences, comments, explanations, or any text outside the 
 ════════════════════════════════════════════════════════
 INPUT
 ════════════════════════════════════════════════════════
-You receive two fields:
-
   "slots"  →  { "YYYY-MM-DD": [ { "from": "HH:mm", "to": "HH:mm" }, … ], … }
-              Available time windows, grouped by date.
-
   "tasks"  →  [ { "id", "hours", "from", "to", "due" }, … ]
     id    : opaque string — copy exactly, never alter
     hours : TOTAL hours that MUST be scheduled across all sessions for this task
     from  : earliest DATE (inclusive) any session may be placed
     to    : latest DATE (inclusive) any session may be placed
-    due   : the assignment's due date — use for priority only
+    due   : assignment due date — use for priority only
 
 ════════════════════════════════════════════════════════
-STRICT RULES — every violation makes the plan wrong
+STRICT RULES
 ════════════════════════════════════════════════════════
-R1  SLOTS ONLY.
-    Every session must start AND end within a SINGLE slot on that date.
-    Example: slot is 08:00–12:00.  Session 11:00–13:00 is INVALID.
-
-R2  DATE WINDOW.
-    A session's date must satisfy: task.from ≤ date ≤ task.to.
-
-R3  NO OVERLAP.
-    Two sessions on the same date must NOT share any minute.
-    If session A ends at T, the very next session may start at T (back-to-back OK).
-    Overlapping even by 1 minute is INVALID.
-
-R4  EXACT HOURS.
-    Sum of all session durations for a task MUST equal task.hours exactly.
-    Duration in minutes = toMins(to) − toMins(from).
-    Never approximate — compute arithmetically.
-
-R5  PRIORITY.
-    Schedule earliest-due tasks first. Do not start a later-due task until
-    an earlier-due task is fully scheduled.
-
-R6  GREEDY FILL.
-    Fill every available slot minute before leaving any task incomplete.
-    If total available minutes (${totalAvailMins} min) ≥ total needed minutes
-    (${totalNeededMins} min), ALL tasks must be fully scheduled.
-
-R7  SPLIT LARGE TASKS.
-    If a task requires more time than a single slot holds, split it across
-    multiple time blocks or multiple days. A task may have many sessions.
-
-R8  MINIMUM SESSION LENGTH.
-    Each session must be at least 15 minutes long.
+R1  SLOTS ONLY. Every session must start AND end within a single slot on that date.
+R2  DATE WINDOW. session.date must satisfy: task.from ≤ date ≤ task.to.
+R3  NO OVERLAP. Two sessions on the same date must NOT share any minute.
+R4  EXACT HOURS. Sum of all session durations for a task MUST equal task.hours exactly.
+    Duration in minutes = toMins(to) − toMins(from). Compute arithmetically.
+R5  PRIORITY. Schedule earliest-due tasks first.
+R6  GREEDY FILL. Fill every available slot minute before leaving any task incomplete.
+    Total available: ${totalAvailMins} min. Total needed: ${totalNeededMins} min.
+    If available ≥ needed, ALL tasks must be fully scheduled.
+R7  SPLIT LARGE TASKS. Split across multiple blocks or days as needed.
+R8  MINIMUM SESSION LENGTH. Each session ≥ 15 minutes.
 
 ════════════════════════════════════════════════════════
-SCHEDULING ALGORITHM  (execute this mentally, step by step)
+SCHEDULING ALGORITHM (execute step by step)
 ════════════════════════════════════════════════════════
-1. Sort tasks by due date (ascending).
-2. For each task (in due-date order):
-   a. Compute minutesNeeded = round(hours × 60).
-   b. Iterate dates from task.from to task.to (ascending).
-   c. On each date, iterate available slots (ascending by from-time).
-   d. For each slot, compute free minutes = slot.toMins − max(slot.fromMins, lastUsedMin).
-      (lastUsedMin tracks minutes already consumed on that date by prior sessions.)
-   e. Take min(freeMinutes, minutesNeeded) for this session — must be ≥ 15.
-   f. Emit session: { id, date, from: fromMins(start), to: fromMins(start+taken) }.
-   g. Subtract taken from minutesNeeded. If minutesNeeded = 0, stop for this task.
-3. If any task has minutesNeeded > 0 after exhausting valid dates, leave it out
-   of sessions (it will appear as unscheduled on the server side — do NOT invent
-   sessions outside the slot map or outside the task window).
+1. Sort tasks by due date ascending.
+2. For each task:
+   a. minutesNeeded = round(hours × 60).
+   b. Iterate dates from task.from to task.to ascending.
+   c. On each date, iterate available slots ascending by from-time.
+   d. freeMinutes = slot.toMins − max(slot.fromMins, lastUsedMin on this date).
+   e. take = min(freeMinutes, minutesNeeded). Must be ≥ 15.
+   f. Emit { id, date, from: HH:mm(start), to: HH:mm(start+take) }.
+   g. minutesNeeded -= take. If 0, move to next task.
+3. Tasks with no valid slots are simply omitted from sessions.
 
 ════════════════════════════════════════════════════════
-OUTPUT  (this exact shape, NO extra keys, NO extra text)
+OUTPUT (exact shape, NO extra keys, NO extra text)
 ════════════════════════════════════════════════════════
 {
   "sessions": [
@@ -445,13 +460,10 @@ OUTPUT  (this exact shape, NO extra keys, NO extra text)
       const parsed = JSON.parse(groqRes.data.choices[0].message.content);
       if (Array.isArray(parsed.sessions)) aiSessions = parsed.sessions;
     } catch (groqErr) {
-      // Log but do NOT return 500 — the deterministic fallback below will cover everything.
-      console.warn('Groq call failed (using deterministic fallback):', groqErr.response?.data || groqErr.message);
+      console.warn('Groq call failed — using deterministic fallback:', groqErr.response?.data || groqErr.message);
     }
 
     // ── 10. Validate every AI session ─────────────────────────────────────────
-    //
-    //  Build availByDate lookup: dateStr → [{ fromMins, toMins }]
     const availByDate = {};
     for (const [dateStr, blocks] of Object.entries(dailySlots)) {
       availByDate[dateStr] = blocks.map(b => ({ fromMins: toMins(b.from), toMins: toMins(b.to) }));
@@ -463,61 +475,37 @@ OUTPUT  (this exact shape, NO extra keys, NO extra text)
     for (const s of aiSessions) {
       if (!s || !s.id || !validIds.has(s.id)) continue;
       const meta = assignmentMeta[s.id];
-
       if (!s.date || typeof s.date !== 'string') continue;
       if (s.date < scheduleFromStr || s.date < meta.schedFrom || s.date > meta.schedTo) continue;
-
       if (!s.from || !s.to) continue;
       const fromM = toMins(s.from);
       const toM   = toMins(s.to);
-      if (isNaN(fromM) || isNaN(toM) || toM <= fromM) continue;
-      if (toM - fromM < 15) continue;
-
-      // Must fit entirely inside one availability block
+      if (isNaN(fromM) || isNaN(toM) || toM <= fromM || toM - fromM < 15) continue;
       const blocks = availByDate[s.date];
       if (!blocks || !blocks.some(b => fromM >= b.fromMins && toM <= b.toMins)) continue;
-
-      // On the final allowed date, enforce hard deadline cutoff
       if (s.date === meta.schedTo && meta.latestEndMins > 0 && toM > meta.latestEndMins) continue;
-
       candidates.push({ id: s.id, date: s.date, fromM, toM, sessMins: toM - fromM });
     }
 
-    candidates.sort((a, b) =>
-      a.date !== b.date ? a.date.localeCompare(b.date) : a.fromM - b.fromM,
-    );
+    candidates.sort((a, b) => a.date !== b.date ? a.date.localeCompare(b.date) : a.fromM - b.fromM);
 
     // ── 11. Deterministic fallback — fill anything the AI missed ──────────────
-    //
-    //  We compute how many minutes the AI already covered per task, then greedily
-    //  fill the remainder using the same slot map.  This guarantees a complete plan
-    //  even when Groq is down or returns partial output.
-    //
-    //  Pass 1: tally minutes proposed by AI (before overlap dedup)
     const aiMinutesById = {};
-    for (const c of candidates) {
-      aiMinutesById[c.id] = (aiMinutesById[c.id] || 0) + c.sessMins;
-    }
+    for (const c of candidates) aiMinutesById[c.id] = (aiMinutesById[c.id] || 0) + c.sessMins;
 
-    //  Track consumed minutes per date slot-position for fallback
-    //  occupiedFallback: dateStr → sorted list of [fromM, toM] intervals
     const occupiedFallback = {};
     for (const dateStr of Object.keys(dailySlots)) occupiedFallback[dateStr] = [];
 
-    // Sort tasks by due date for greedy scheduling
-    const sortedTasks = aiTasks.slice().sort((a, b) => a.due.localeCompare(b.due));
-
+    const sortedTasks        = aiTasks.slice().sort((a, b) => a.due.localeCompare(b.due));
     const fallbackCandidates = [];
 
     for (const task of sortedTasks) {
-      const meta          = assignmentMeta[task.id];
-      const targetMins    = Math.round(meta.remaining * 60);
+      const meta           = assignmentMeta[task.id];
+      const targetMins     = Math.round(meta.remaining * 60);
       const alreadyCovered = aiMinutesById[task.id] || 0;
-      let   stillNeeded   = targetMins - alreadyCovered;
-
+      let   stillNeeded    = targetMins - alreadyCovered;
       if (stillNeeded <= 0) continue;
 
-      // Walk dates within the task window
       const dateStart = parseDate(meta.schedFrom);
       const dateEnd   = parseDate(meta.schedTo);
 
@@ -534,8 +522,7 @@ OUTPUT  (this exact shape, NO extra keys, NO extra text)
 
         for (const block of blocks) {
           if (stillNeeded <= 0) break;
-          // Find free sub-intervals within this block not yet occupied
-          // Build a sorted list of occupied intervals overlapping this block
+
           const overlapping = used
             .filter(([f, t]) => f < block.toMins && t > block.fromMins)
             .sort((a, b) => a[0] - b[0]);
@@ -556,7 +543,6 @@ OUTPUT  (this exact shape, NO extra keys, NO extra text)
             if (take < 15) continue;
 
             const sessionTo = freeFrom + take;
-            // Enforce deadline cutoff on the final date
             if (dateStr === meta.schedTo && meta.latestEndMins > 0 && sessionTo > meta.latestEndMins) {
               const capped = meta.latestEndMins - freeFrom;
               if (capped < 15) continue;
@@ -574,11 +560,8 @@ OUTPUT  (this exact shape, NO extra keys, NO extra text)
       }
     }
 
-    // Merge AI candidates + fallback candidates; fallback only covers the gap
     const allCandidates = [...candidates, ...fallbackCandidates];
-    allCandidates.sort((a, b) =>
-      a.date !== b.date ? a.date.localeCompare(b.date) : a.fromM - b.fromM,
-    );
+    allCandidates.sort((a, b) => a.date !== b.date ? a.date.localeCompare(b.date) : a.fromM - b.fromM);
 
     // ── 12. Place sessions: dedup overlaps + cap to remaining ─────────────────
     const placedMinsById = {};
@@ -590,20 +573,13 @@ OUTPUT  (this exact shape, NO extra keys, NO extra text)
       const targetMins  = Math.round(meta.remaining * 60);
       const placedSoFar = placedMinsById[s.id] || 0;
       const stillNeeded = targetMins - placedSoFar;
-
       if (stillNeeded <= 0) continue;
 
       let { fromM, toM } = s;
       let sessMins = toM - fromM;
-
-      // Cap to remaining need
-      if (sessMins > stillNeeded) {
-        sessMins = stillNeeded;
-        toM      = fromM + sessMins;
-      }
+      if (sessMins > stillNeeded) { sessMins = stillNeeded; toM = fromM + sessMins; }
       if (sessMins < 15) continue;
 
-      // Overlap check
       const occupied = occupiedByDate[s.date] || [];
       if (occupied.some(([oF, oT]) => fromM < oT && toM > oF)) continue;
 
@@ -631,15 +607,10 @@ OUTPUT  (this exact shape, NO extra keys, NO extra text)
       const placedMins  = placedMinsById[meta.id] || 0;
       const placedHours = r4(placedMins / 60);
       const needed      = meta.remaining;
-
       if (placedHours >= needed) continue;
 
       if (placedHours === 0) {
-        unscheduled.push({
-          assignmentId: meta.id,
-          title:        meta.title,
-          reason:       'No available time slots',
-        });
+        unscheduled.push({ assignmentId: meta.id, title: meta.title, reason: 'No available time slots' });
       } else {
         const removed = r4(needed - placedHours);
         warnings.push({
@@ -647,13 +618,21 @@ OUTPUT  (this exact shape, NO extra keys, NO extra text)
           title:          meta.title,
           scheduledHours: placedHours,
           neededHours:    needed,
-          message:        `Fully scheduled (${removed}h removed — outside valid window or availability block)`,
+          message:        `Partially scheduled (${removed}h could not fit in your availability window)`,
         });
       }
     }
 
-    // ── 14. Respond ───────────────────────────────────────────────────────────
-    res.json({ sessions: finalSessions, warnings, unscheduled, weekStart: weekStartStr });
+    // ── 14. Save plan to DB ───────────────────────────────────────────────────
+    const saved = await upsertPlan(req.userId, weekStartStr, finalSessions, warnings, unscheduled);
+
+    // ── 15. Respond ───────────────────────────────────────────────────────────
+    res.json({
+      sessions:    saved.sessions    || finalSessions,
+      warnings:    saved.warnings    || warnings,
+      unscheduled: saved.unscheduled || unscheduled,
+      weekStart:   weekStartStr,
+    });
 
   } catch (err) {
     console.error('POST /planner/generate:', err.response?.data || err.message || err);
@@ -661,27 +640,20 @@ OUTPUT  (this exact shape, NO extra keys, NO extra text)
   }
 });
 
-// ─── POST /planner/schedule — save plan ───────────────────────────────────────
+// ─── POST /planner/schedule — save plan (called directly by frontend if needed) ──
 
 router.post('/schedule', auth, async (req, res) => {
   try {
     const { weekStart, sessions, warnings, unscheduled } = req.body;
     if (!weekStart) return res.status(400).json({ message: 'weekStart is required' });
 
-    const plan = await StudyPlan.findOneAndUpdate(
-      { userId: req.userId, weekStart },
-      {
-        userId:      req.userId,
-        weekStart,
-        sessions:    sessions    || [],
-        warnings:    warnings    || [],
-        unscheduled: unscheduled || [],
-        generatedAt: new Date(),
-      },
-      { upsert: true, new: true },
+    const saved = await upsertPlan(
+      req.userId, weekStart,
+      sessions    || [],
+      warnings    || [],
+      unscheduled || [],
     );
-
-    res.json(plan);
+    res.json(saved);
   } catch (err) {
     console.error('POST /planner/schedule:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
