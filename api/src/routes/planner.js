@@ -336,48 +336,32 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
    Example: block is 08:00–12:00. A 2h session starting 11:00 ends 13:00 — INVALID. Start at 10:00 instead.
 
 2. FUTURE DATES ONLY: Never schedule a session on a date before "scheduleFromDate".
-   For the current week this is today. For future weeks this is the weekStart date.
 
 3. SCHEDULING WINDOW:
-   Each assignment has "scheduleFrom" (YYYY-MM-DD) and "scheduleTo" (YYYY-MM-DD).
+   Each assignment has "scheduleFrom" and "scheduleTo".
    "scheduleLatestTime" is the exact ISO cutoff — the session must END before this.
    → No session may start before scheduleFrom.
    → No session may start OR end after scheduleTo.
-   → No session may end after scheduleLatestTime.
-   If an assignment's scheduleTo is before the first available day, put it in unscheduled.
 
 4. EXACT HOURS (CRITICAL):
    Each assignment has "remainingHours". The sum of "hours" across ALL sessions for that
    assignment must equal EXACTLY remainingHours. Never more, never less.
-   Example: remainingHours=1.5 → schedule exactly 1.5h total (one 1.5h block or 1h + 0.5h).
    NEVER produce a session with hours < 0.25 (15 minutes minimum).
 
 5. SPLITTING: If remainingHours > maxSessionHours, split across multiple sessions.
    Name them "Title (Part 1)", "Title (Part 2)", etc. Each part ≤ maxSessionHours.
-   The last part is remainingHours minus the sum of all previous parts.
 
 6. NO TIME OVERLAP: Two sessions on the same date must never overlap in time.
-   After placing a session from HH:mm to HH:mm, the next session on the same date
-   must start at least breakMinutes after the previous session's end time.
-   Track used time slots carefully for each date.
+   After placing a session, the next session on the same date must start at least breakMinutes later.
 
 7. BREAKS: Leave exactly breakMinutes gap between consecutive sessions in the same block.
 
 8. PRIORITY: Schedule earliest-dueDate assignments first. Use ALL available time greedily.
 
-9. USE FREE SLOTS (CRITICAL — READ THIS CAREFULLY):
-   "freeSlotsPerDay" shows EXACTLY how much time is available each day.
-   Before placing any session, check "freeSlotsPerDay" for that date.
-   If totalAvailableMinutes for a date ≥ session length in minutes → the session FITS. Place it.
-   You MUST greedily fill free time. Do NOT skip a day that has free minutes available.
-   Only put an assignment in "unscheduled" if EVERY day in its scheduleFrom–scheduleTo
-   range (within this week) has 0 usable minutes for the required session length.
+9. NO PHANTOM ENTRIES: Only include sessions/warnings/unscheduled for assignmentIds
+    that appear EXACTLY in the provided "assignments" array.
 
-10. NO PHANTOM ENTRIES: Only include sessions/warnings/unscheduled for assignmentIds
-    that appear EXACTLY in the provided "assignments" array. Copy the id character-for-character.
-    Do NOT invent entries for any other assignment.
-
-11. WARNINGS vs UNSCHEDULED:
+10. WARNINGS vs UNSCHEDULED:
     - "warnings": assignment was partially scheduled (some hours placed but < remainingHours)
     - "unscheduled": assignment could not be scheduled AT ALL (0 hours placed)
     - NEVER put the same assignment in both warnings AND unscheduled.
@@ -427,7 +411,6 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
       };
     }
 
-    // Availability block bounds per date (for overflow validation)
     const availBlocksByDay = {};
     for (let i = 0; i <= 6; i++) {
       const dayDate = new Date(weekStart);
@@ -447,16 +430,13 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
     const droppedHoursByAssignment = {};
 
     for (const s of (plan.sessions || [])) {
-      // Strip phantom IDs
       if (!validAssignmentIds.has(s.assignmentId)) continue;
 
-      // Strip past dates
       if (s.date < scheduleFromStr) {
         droppedHoursByAssignment[s.assignmentId] = (droppedHoursByAssignment[s.assignmentId] || 0) + (s.hours || 0);
         continue;
       }
 
-      // Strip outside scheduling window
       const w = windowMap[s.assignmentId];
       if (w) {
         if (s.date < w.from || s.date > w.scheduleTo) {
@@ -470,7 +450,6 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
         }
       }
 
-      // Strip sessions that overflow their availability block
       const blocks = availBlocksByDay[s.date] || [];
       const [sfh, sfm] = s.from.split(':').map(Number);
       const [sth, stm] = s.to.split(':').map(Number);
@@ -479,33 +458,29 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
       const fitsInBlock = blocks.some(b =>
         sessionFromMins >= b.fromMins && sessionToMins <= b.toMins
       );
+      
       if (!fitsInBlock) {
         droppedHoursByAssignment[s.assignmentId] = (droppedHoursByAssignment[s.assignmentId] || 0) + (s.hours || 0);
         continue;
       }
 
-      // FIX: Drop micro-sessions (< 0.25h / 15 minutes)
       if ((s.hours || 0) < 0.25) continue;
 
       validSessions.push({ ...s, completed: false, skipped: false });
     }
 
-    // FIX: Sort by date then start time before enforcing hours, so sessions are processed chronologically
     validSessions.sort((a, b) => {
       if (a.date !== b.date) return a.date.localeCompare(b.date);
       return a.from.localeCompare(b.from);
     });
 
-    // FIX: Enforce exact hours AND detect time overlaps per date
     const hoursScheduledByAssignment = {};
     const finalSessions = [];
-    // Track occupied time ranges per date to detect overlaps: { dateStr: [[fromMins, toMins], ...] }
     const occupiedByDate = {};
 
     for (const s of validSessions) {
       const a = assignmentList.find(x => x.id === s.assignmentId);
 
-      // ── Enforce exact hours cap ───────────────────────────────────────────
       const already    = hoursScheduledByAssignment[s.assignmentId] || 0;
       const targetHours = a ? a.remainingHours : null;
       if (targetHours !== null) {
@@ -516,7 +491,6 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
         let sessionTo    = s.to;
 
         if (sessionHours > remaining) {
-          // Clamp the session to exactly the remaining hours
           const [fh, fm]     = s.from.split(':').map(Number);
           const clampedMins  = Math.round(remaining * 60);
           const endTotalMins = fh * 60 + fm + clampedMins;
@@ -524,7 +498,6 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
           sessionHours = remaining;
         }
 
-        // Drop resulting micro-session after clamping
         if (sessionHours < 0.25) continue;
 
         const [sfh2, sfm2] = s.from.split(':').map(Number);
@@ -532,7 +505,6 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
         const fromMinsVal  = sfh2 * 60 + sfm2;
         const toMinsVal    = sth2 * 60 + stm2;
 
-        // FIX: Check for time overlap with already-placed sessions on same date
         const occupied = occupiedByDate[s.date] || [];
         const overlaps = occupied.some(([oFrom, oTo]) =>
           fromMinsVal < oTo && toMinsVal > oFrom
@@ -542,12 +514,10 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
           continue;
         }
 
-        // All checks passed — accept session
         occupiedByDate[s.date] = [...occupied, [fromMinsVal, toMinsVal]];
         hoursScheduledByAssignment[s.assignmentId] = Math.round((already + sessionHours) * 4) / 4;
         finalSessions.push({ ...s, to: sessionTo, hours: sessionHours });
       } else {
-        // No assignment meta (shouldn't happen) — just check overlaps
         const [sfh2, sfm2] = s.from.split(':').map(Number);
         const [sth2, stm2] = s.to.split(':').map(Number);
         const fromMinsVal  = sfh2 * 60 + sfm2;
@@ -562,58 +532,73 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
       }
     }
 
-    // ── Post-process warnings — strip phantoms ────────────────────────────────
-    const aiWarnings = (plan.warnings || []).filter(w => validAssignmentIds.has(w.assignmentId));
+    // ── Deep Cleaning for AI Output ─────────────────────────────────────────────
+    let aiWarnings = (plan.warnings || []).filter(w => validAssignmentIds.has(w.assignmentId));
+    let aiUnscheduled = (plan.unscheduled || []).filter(u => validAssignmentIds.has(u.assignmentId));
 
+    // 1. Sync AI's warnings with our actual scheduled totals (since we dropped/clamped some)
+    aiWarnings = aiWarnings.map(w => {
+      const a = assignmentList.find(x => x.id === w.assignmentId);
+      if (!a) return w;
+      return {
+        ...w,
+        scheduledHours: hoursScheduledByAssignment[w.assignmentId] || 0,
+        neededHours: a.remainingHours
+      };
+    });
+
+    // 2. Add warnings for dropped hours
     for (const [assignmentId, droppedHours] of Object.entries(droppedHoursByAssignment)) {
       const a = assignmentList.find(x => x.id === assignmentId);
       if (!a) continue;
+      const scheduled = hoursScheduledByAssignment[assignmentId] || 0;
+
+      // If we managed to fully schedule it anyway, no warning needed
+      if (scheduled >= a.remainingHours) continue;
+
       const existing = aiWarnings.find(w => w.assignmentId === assignmentId);
       if (existing) {
-        existing.message += ` (${droppedHours}h removed — outside valid window or availability block)`;
+        // If AI hallucinated a message like "Fully scheduled", overwrite it
+        if (existing.message.toLowerCase().includes("fully scheduled")) {
+          existing.message = `${droppedHours}h removed — outside valid window or availability block.`;
+        } else {
+          existing.message += ` (${droppedHours}h removed — outside valid window or availability block)`;
+        }
       } else {
         aiWarnings.push({
           assignmentId,
           title:          a.title,
-          scheduledHours: hoursScheduledByAssignment[assignmentId] || 0,
+          scheduledHours: scheduled,
           neededHours:    a.remainingHours,
           message:        `${droppedHours}h removed — sessions were outside valid window or availability block.`,
         });
       }
     }
 
-    // Strip phantom unscheduled
-    let aiUnscheduled = (plan.unscheduled || []).filter(u => validAssignmentIds.has(u.assignmentId));
-
-    // FIX: Remove from unscheduled if the assignment's window extends beyond this week
-    // (it will be correctly scheduled in the appropriate future week — don't surface it as an issue here)
-    aiUnscheduled = aiUnscheduled.filter(u => {
-      const scheduled = hoursScheduledByAssignment[u.assignmentId] || 0;
-      const a = assignmentList.find(x => x.id === u.assignmentId);
-      if (!a) return true;
-      // Fully scheduled → not unscheduled
-      if (scheduled >= a.remainingHours) return false;
-      // Partially scheduled → goes to warnings, not unscheduled
-      if (scheduled > 0) return false;
-      // 0 hours scheduled but window continues past this week → silently defer
-      const w = windowMap[u.assignmentId];
-      if (w && w.scheduleTo < weekEndStr) {
-        // Window ends WITHIN this week, genuinely no time → keep in unscheduled
-        return true;
+    // 3. Demote 0-hour warnings into `unscheduled`
+    for (let i = aiWarnings.length - 1; i >= 0; i--) {
+      const w = aiWarnings[i];
+      if (w.scheduledHours === 0) {
+        const inUnscheduled = aiUnscheduled.some(u => u.assignmentId === w.assignmentId);
+        if (!inUnscheduled) {
+          aiUnscheduled.push({
+            assignmentId: w.assignmentId,
+            title: w.title,
+            reason: w.message || "Not enough time available"
+          });
+        }
+        aiWarnings.splice(i, 1);
       }
-      // Window extends past this week → defer silently (will appear next week)
-      return false;
-    });
+    }
 
-    // FIX: Move 0-scheduled assignments (that slipped through) from unscheduled to warnings
-    // if they have partially placed hours tracked
-    const scheduledIds = new Set(finalSessions.map(s => s.assignmentId));
+    // 4. Erase warnings for anything that actually got fully scheduled
+    aiWarnings = aiWarnings.filter(w => w.scheduledHours < w.neededHours);
+
+    // 5. Catch partially scheduled items that missed getting a warning
     for (const a of assignmentList) {
       const scheduled = hoursScheduledByAssignment[a.id] || 0;
       if (scheduled > 0 && scheduled < a.remainingHours) {
-        const alreadyWarned    = aiWarnings.some(w => w.assignmentId === a.id);
-        const inUnscheduled    = aiUnscheduled.findIndex(u => u.assignmentId === a.id);
-        if (inUnscheduled !== -1) aiUnscheduled.splice(inUnscheduled, 1);
+        const alreadyWarned = aiWarnings.some(w => w.assignmentId === a.id);
         if (!alreadyWarned) {
           aiWarnings.push({
             assignmentId:   a.id,
@@ -626,9 +611,23 @@ Output ONLY valid JSON — no markdown, no explanation, no extra keys.
       }
     }
 
-    // Remove from unscheduled if already in warnings
-    const warnedIds = new Set(aiWarnings.map(w => w.assignmentId));
-    aiUnscheduled = aiUnscheduled.filter(u => !warnedIds.has(u.assignmentId));
+    // 6. Clean unscheduled list
+    aiUnscheduled = aiUnscheduled.filter(u => {
+      const a = assignmentList.find(x => x.id === u.assignmentId);
+      if (!a) return true;
+      const scheduled = hoursScheduledByAssignment[u.assignmentId] || 0;
+      
+      // If it got ANY hours, it's not unscheduled (it's partially scheduled and in warnings)
+      if (scheduled > 0) return false; 
+
+      const w = windowMap[u.assignmentId];
+      // If the assignment's scheduling window extends into future weeks, defer it silently 
+      // (Don't flag as unscheduled this week, let it naturally flow to next week)
+      if (w && w.scheduleTo <= weekEndStr) {
+        return true; // The window ENDS this week, so it's genuinely missed. Keep it.
+      }
+      return false; // Defer to future week. Drop it.
+    });
 
     res.json({
       sessions:    finalSessions,
