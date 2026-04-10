@@ -9,29 +9,23 @@ const User       = require('../models/User');
 const Assignment = require('../models/Assignment');
 const StudyPlan  = require('../models/StudyPlan');
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Constants ───────────────────────────────────────────────────────────────────────────
 
 const DAY_NAMES = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-
-// Cascading minimum session floors (minutes). Tried in order.
-// Index 0 = "full task in one slot" — computed per-task at runtime.
 const MIN_FLOORS = [60, 45, 30, 15];
 
-// ─── Pure Helpers ─────────────────────────────────────────────────────────────
+// ─── Pure Helpers ─────────────────────────────────────────────────────────────────────
 
-/** Date → "YYYY-MM-DD" (UTC) */
 function toDateStr(d) {
   return d.toISOString().slice(0, 10);
 }
 
-/** "YYYY-MM-DD" → Date at UTC midnight */
 function parseDate(str) {
   const d = new Date(str + 'T00:00:00.000Z');
   d.setUTCHours(0, 0, 0, 0);
   return d;
 }
 
-/** Compute the Monday or Sunday that begins the week containing `date`. */
 function getWeekStart(date, firstDay = 'sunday') {
   const d   = new Date(date);
   d.setUTCHours(0, 0, 0, 0);
@@ -41,41 +35,28 @@ function getWeekStart(date, firstDay = 'sunday') {
   return d;
 }
 
-/** Returns { earliest, latest } Date objects for when work may be scheduled. */
 function schedulingWindow(dueDate, advanceDays, bufferHours) {
   const due      = new Date(dueDate);
   const earliest = new Date(due.getTime() - advanceDays * 86_400_000);
-  const latest   = new Date(due.getTime() - bufferHours  *  3_600_000);
+  const latest   = new Date(due.getTime() - bufferHours *  3_600_000);
   if (earliest >= latest) return null;
   return { earliest, latest };
 }
 
-/** "HH:mm" → total minutes from midnight */
 function toMins(hhmm) {
   const [h, m] = hhmm.split(':').map(Number);
   return h * 60 + (m || 0);
 }
 
-/** Total minutes from midnight → "HH:mm" */
 function fromMins(mins) {
   return `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
 }
 
-/** Round to nearest quarter-hour (0.25 h) */
 function r4(n) { return Math.round(n * 4) / 4; }
 
-/**
- * Upsert a study plan robustly — handles E11000 duplicate key by retrying
- * with an explicit $set so Mongoose never tries to $setOnInsert a duplicate.
- */
 async function upsertPlan(userId, weekStart, sessions, warnings, unscheduled) {
   const update = {
-    $set: {
-      sessions,
-      warnings,
-      unscheduled,
-      generatedAt: new Date(),
-    },
+    $set: { sessions, warnings, unscheduled, generatedAt: new Date() },
     $setOnInsert: { userId, weekStart },
   };
   try {
@@ -96,7 +77,29 @@ async function upsertPlan(userId, weekStart, sessions, warnings, unscheduled) {
   }
 }
 
-// ─── GET /planner/preferences ─────────────────────────────────────────────────
+// AI estimate helper — works for ANY assignment (manual or Canvas)
+async function aiEstimate(title) {
+  try {
+    const gr = await axios.post(
+      'https://api.groq.com/openai/v1/chat/completions',
+      {
+        model:       'llama-3.1-8b-instant',
+        messages:    [{
+          role:    'user',
+          content: `Reply with ONE decimal number only — estimated total hours a student needs to complete: "${title || 'assignment'}"`,
+        }],
+        max_tokens:  8,
+        temperature: 0.1,
+      },
+      { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' } },
+    );
+    const est = parseFloat(gr.data.choices[0].message.content.trim());
+    if (!isNaN(est) && est > 0) return r4(Math.min(Math.max(est, 0.25), 24));
+  } catch (_) { /* fall through */ }
+  return null;
+}
+
+// ─── GET /planner/preferences ───────────────────────────────────────────────────────────
 
 router.get('/preferences', auth, async (req, res) => {
   try {
@@ -112,7 +115,7 @@ router.get('/preferences', auth, async (req, res) => {
   }
 });
 
-// ─── PUT /planner/preferences ─────────────────────────────────────────────────
+// ─── PUT /planner/preferences ───────────────────────────────────────────────────────────
 
 router.put('/preferences', auth, async (req, res) => {
   try {
@@ -177,29 +180,12 @@ router.put('/preferences', auth, async (req, res) => {
   }
 });
 
-// ─── POST /planner/generate ────────────────────────────────────────────────────
-//
-//  Flow:
-//    1.  Load user settings
-//    2.  Resolve target week
-//    3.  Fetch incomplete assignments
-//    4.  Classify: overdue vs. schedulable
-//    5.  Count hours already scheduled in previous weeks
-//    6.  AI-estimate missing durations (Canvas tasks only)
-//    7.  Build assignmentMeta map + aiTasks list
-//    8.  Build per-date slot map
-//    9.  Call Groq with a strict prompt
-//   10.  Validate every AI session; discard invalid ones
-//   11.  Deterministic fallback — fill anything the AI missed
-//   12.  Enforce no-overlap + cap to remaining minutes
-//   13.  Compute warnings / unscheduled
-//   14.  Save plan to DB
-//   15.  Respond
+// ─── POST /planner/generate ───────────────────────────────────────────────────────────────
 
 router.post('/generate', auth, async (req, res) => {
   try {
 
-    // ── 1. Load user settings ──────────────────────────────────────────────────
+    // ── 1. Load user settings ──────────────────────────────────────────────────────────
     const user = await User.findById(req.userId).select('studyPlanner preferences');
     if (!user) return res.status(404).json({ message: 'User not found' });
 
@@ -214,7 +200,7 @@ router.post('/generate', auth, async (req, res) => {
         message: 'No availability blocks set. Go to Settings → Study Planner → Availability Blocks.',
       });
 
-    // ── 2. Resolve target week ─────────────────────────────────────────────────
+    // ── 2. Resolve target week ─────────────────────────────────────────────────────────
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
 
@@ -231,33 +217,36 @@ router.post('/generate', auth, async (req, res) => {
     const scheduleFrom    = weekStart > today ? weekStart : today;
     const scheduleFromStr = toDateStr(scheduleFrom);
 
-    // ── 3. Fetch incomplete assignments ───────────────────────────────────────
+    // ── 3. Fetch incomplete assignments ──────────────────────────────────────────────
     const allAssignments = await Assignment.find({
       userId:    req.userId,
       completed: false,
       dueDate:   { $ne: null },
     }).sort({ dueDate: 1 });
 
-    // ── 4. Classify: overdue vs. eligible ─────────────────────────────────────
+    // ── 4. Classify: overdue (always skip) vs. eligible ──────────────────────────────
+    // An assignment is overdue when its latest scheduling time has already passed.
+    // Overdue assignments are NEVER scheduled regardless of which week is requested.
+    // They appear in the unscheduled list with a human-readable message.
     const overdueUnscheduled = [];
     const eligible           = [];
-    const currentWeekStartStr = toDateStr(getWeekStart(today, firstDay));
 
     for (const a of allAssignments) {
       const win = schedulingWindow(a.dueDate, advanceDays, bufferHours);
+      // No valid window (buffer >= advance) — skip silently
       if (!win) continue;
 
+      // Overdue: latest scheduling time is in the past
       if (win.latest <= today) {
-        if (weekStartStr === currentWeekStartStr) {
-          overdueUnscheduled.push({
-            assignmentId: a._id,
-            title:        a.title,
-            reason:       `Deadline has passed — latest scheduling time was ${toDateStr(win.latest)}.`,
-          });
-        }
-        continue;
+        overdueUnscheduled.push({
+          assignmentId: a._id,
+          title:        a.title,
+          reason:       `Deadline has passed — latest scheduling time was ${toDateStr(win.latest)}.`,
+        });
+        continue; // never schedule this in any week
       }
 
+      // Does the scheduling window overlap this week at all?
       if (win.earliest > weekEnd || win.latest < weekStart) continue;
       eligible.push({ a, win });
     }
@@ -272,7 +261,7 @@ router.post('/generate', auth, async (req, res) => {
       });
     }
 
-    // ── 5. Count hours already placed in PREVIOUS weeks (skip skipped) ────────
+    // ── 5. Count hours already placed in PREVIOUS weeks (skip skipped) ──────────
     const previousPlans = await StudyPlan.find({
       userId:    req.userId,
       weekStart: { $lt: weekStartStr },
@@ -287,35 +276,23 @@ router.post('/generate', auth, async (req, res) => {
       }
     }
 
-    // ── 6. AI-estimate missing durations (Canvas only) ────────────────────────
+    // ── 6. Ensure ALL assignments have an estimated time ───────────────────────────
+    // Applies to both manual and Canvas assignments with no estimate.
+    // Falls back to 1h if the AI call fails.
     for (const { a } of eligible) {
-      if (a.estimatedTime == null && a.source === 'canvas') {
-        try {
-          const gr = await axios.post(
-            'https://api.groq.com/openai/v1/chat/completions',
-            {
-              model:       'llama-3.1-8b-instant',
-              messages:    [{
-                role:    'user',
-                content: `Reply with ONE decimal number only — estimated total hours a student needs to complete: "${a.title || 'assignment'}"`,
-              }],
-              max_tokens:  8,
-              temperature: 0.1,
-            },
-            { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' } },
-          );
-          const est = parseFloat(gr.data.choices[0].message.content.trim());
-          if (!isNaN(est) && est > 0) {
-            a.estimatedTime = r4(Math.min(Math.max(est, 0.25), 24));
-            a.aiGenerated   = true;
-            await a.save();
-          }
-        } catch (_) { /* fall through to default */ }
+      if (a.estimatedTime == null) {
+        const est = await aiEstimate(a.title);
+        if (est != null) {
+          a.estimatedTime = est;
+          a.aiGenerated   = true;
+          await a.save();
+        } else {
+          a.estimatedTime = 1; // safe fallback — not persisted
+        }
       }
-      if (a.estimatedTime == null) a.estimatedTime = 1;
     }
 
-    // ── 7. Build assignmentMeta + aiTasks ────────────────────────────────────
+    // ── 7. Build assignmentMeta + aiTasks ─────────────────────────────────────────
     const assignmentMeta = {};
     const aiTasks        = [];
 
@@ -364,7 +341,7 @@ router.post('/generate', auth, async (req, res) => {
       });
     }
 
-    // ── 8. Build per-date slot map ────────────────────────────────────────────
+    // ── 8. Build per-date slot map ─────────────────────────────────────────────────
     const dailySlots = {};
     for (let i = 0; i <= 6; i++) {
       const d = new Date(weekStart);
@@ -386,7 +363,7 @@ router.post('/generate', auth, async (req, res) => {
       });
     }
 
-    // ── 9. AI prompt + call ───────────────────────────────────────────────────
+    // ── 9. AI prompt + call ───────────────────────────────────────────────────────────
     const totalAvailMins  = Object.values(dailySlots).flat().reduce((s, b) => s + toMins(b.to) - toMins(b.from), 0);
     const totalNeededMins = aiTasks.reduce((s, t) => s + Math.round(t.hours * 60), 0);
 
@@ -394,9 +371,9 @@ router.post('/generate', auth, async (req, res) => {
 You are a deterministic study-session scheduler. Your ONLY output is a single JSON object.
 DO NOT include markdown fences, comments, explanations, or any text outside the JSON.
 
-════════════════════════════════════════════════════════
+╔════════════════════════════════════════════════════════
 INPUT
-════════════════════════════════════════════════════════
+╔════════════════════════════════════════════════════════
   "slots"  →  { "YYYY-MM-DD": [ { "from": "HH:mm", "to": "HH:mm" }, … ], … }
   "tasks"  →  [ { "id", "hours", "from", "to", "due" }, … ]
     id    : opaque string — copy exactly, never alter
@@ -405,9 +382,9 @@ INPUT
     to    : latest DATE (inclusive) any session may be placed
     due   : assignment due date — for reference only
 
-════════════════════════════════════════════════════════
+╔════════════════════════════════════════════════════════
 STRICT RULES
-════════════════════════════════════════════════════════
+╔════════════════════════════════════════════════════════
 R1  SLOTS ONLY. Every session must start AND end within a single slot on that date.
 R2  DATE WINDOW. session.date must satisfy: task.from ≤ date ≤ task.to.
 R3  NO OVERLAP. Two sessions on the same date must NOT share any minute.
@@ -436,9 +413,9 @@ R8  CASCADING MINIMUM. When splitting, the smallest part must respect a minimum 
 R9  ORDER IS FREE. Tasks may be scheduled in any order within their windows.
     No due-date ordering is required.
 
-════════════════════════════════════════════════════════
+╔════════════════════════════════════════════════════════
 SCHEDULING ALGORITHM (execute step by step)
-════════════════════════════════════════════════════════
+╔════════════════════════════════════════════════════════
 For each task:
   minutesNeeded = round(hours × 60)
 
@@ -462,18 +439,18 @@ For each task:
 
   STEP C — If still unplaced → omit from sessions (will appear in warnings/unscheduled).
 
-════════════════════════════════════════════════════════
+╔════════════════════════════════════════════════════════
 PLACEMENT WITHIN A BLOCK
-════════════════════════════════════════════════════════
+╔════════════════════════════════════════════════════════
   Single session (whole task or last part): place at START of free interval.
   First part of a multi-part task: place at END of the block's free interval
     (i.e., from = freeEnd − take, to = freeEnd).
   Middle parts: fill the block's entire free interval.
   Last part: place at START of the block's free interval (from = freeStart, to = freeStart + take).
 
-════════════════════════════════════════════════════════
+╔════════════════════════════════════════════════════════
 OUTPUT (exact shape, NO extra keys, NO extra text)
-════════════════════════════════════════════════════════
+╔════════════════════════════════════════════════════════
 {
   "sessions": [
     { "id": "<exact task id>", "date": "YYYY-MM-DD", "from": "HH:mm", "to": "HH:mm" }
@@ -502,7 +479,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       console.warn('Groq call failed — using deterministic fallback:', groqErr.response?.data || groqErr.message);
     }
 
-    // ── 10. Validate every AI session ─────────────────────────────────────────
+    // ── 10. Validate every AI session ─────────────────────────────────────────────────
     const availByDate = {};
     for (const [dateStr, blocks] of Object.entries(dailySlots)) {
       availByDate[dateStr] = blocks.map(b => ({ fromMins: toMins(b.from), toMins: toMins(b.to) }));
@@ -528,21 +505,10 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
 
     candidates.sort((a, b) => a.date !== b.date ? a.date.localeCompare(b.date) : a.fromM - b.fromM);
 
-    // ── 11. Deterministic fallback — fill anything the AI missed ──────────────
-    //
-    // For each unplaced (or partially placed) task, find a CONTIGUOUS CHAIN of
-    // free intervals summing to targetMins, respecting the cascading minimum floor.
-    // "Contiguous" = consecutive in the chronological ordered list of availability
-    // blocks — no other task may have sessions between the first and last block.
-    //
-    // Pass 1 (clean): only consider chains where other tasks occupy nothing between
-    //   the first and last block of the chain.
-    // Pass 2 (mixed): allow other tasks in blocks; use only the free gaps within each block.
-
+    // ── 11. Deterministic fallback ───────────────────────────────────────────────────────
     const aiMinutesById = {};
     for (const c of candidates) aiMinutesById[c.id] = (aiMinutesById[c.id] || 0) + c.sessMins;
 
-    // Build ordered list of all (date, blockIndex) entries within a task's window.
     function buildBlockList(schedFrom, schedTo) {
       const result = [];
       const end    = parseDate(schedTo);
@@ -557,7 +523,6 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       return result;
     }
 
-    // Return free intervals within a block given occupied [fromM, toM] pairs.
     function getFreeIntervals(blockFrom, blockTo, occupied) {
       const sorted = occupied
         .filter(([f, t]) => f < blockTo && t > blockFrom)
@@ -572,37 +537,29 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       return free;
     }
 
-    // Try to place a contiguous chain for `taskId` with given minFloor.
-    // occupiedByDate: { dateStr: [[fromM, toM, taskId], ...] }
-    // cleanPass: if true, break chain the moment another task occupies any minute
-    //   between the chain's start block and the current block.
-    // Returns array of session candidates or null.
     function tryPlaceContiguous(taskId, blockList, targetMins, minFloor, occupiedByDate, latestEndMins, schedTo, cleanPass) {
       for (let startIdx = 0; startIdx < blockList.length; startIdx++) {
         const chain     = [];
         let   collected = 0;
-        let   chainBroken = false;
 
         for (let i = startIdx; i < blockList.length && collected < targetMins; i++) {
           const blk = blockList[i];
           const occ = (occupiedByDate[blk.dateStr] || []);
 
           if (cleanPass && i > startIdx) {
-            // If any other task occupies anything in this block, chain is broken
             const hasOther = occ.some(([f, t, tid]) => tid !== taskId && f < blk.toMins && t > blk.fromMins);
-            if (hasOther) { chainBroken = true; break; }
+            if (hasOther) break;
           }
 
-          // Compute effective ceiling for schedTo date
           const blockTo = (blk.dateStr === schedTo && latestEndMins > 0)
             ? Math.min(blk.toMins, latestEndMins)
             : blk.toMins;
-          if (blockTo <= blk.fromMins) { chainBroken = true; break; }
+          if (blockTo <= blk.fromMins) break;
 
           const freeIntervals = getFreeIntervals(blk.fromMins, blockTo, occ.map(([f, t]) => [f, t]));
           const blockFree     = freeIntervals.reduce((s, [f, t]) => s + t - f, 0);
 
-          if (blockFree === 0) { chainBroken = true; break; } // gap with no free time breaks contiguity
+          if (blockFree === 0) break;
 
           const take = Math.min(blockFree, targetMins - collected);
           chain.push({ blk, freeIntervals, take, blockFree, blockTo });
@@ -611,16 +568,12 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
 
         if (collected < targetMins) continue;
 
-        // Validate min floor for every segment except the last
         let valid = true;
-        for (let ci = 0; ci < chain.length - 1; ci++) {
+        for (let ci = 0; ci < chain.length; ci++) {
           if (chain[ci].take < minFloor) { valid = false; break; }
         }
-        if (chain[chain.length - 1].take < minFloor) valid = false;
-
         if (!valid) continue;
 
-        // Build actual sessions from chain
         const sessions = [];
         const nParts   = chain.length;
 
@@ -629,31 +582,16 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
           let fromM, toM;
 
           if (nParts === 1) {
-            // Single session — place at start of first free interval
             fromM = freeIntervals[0][0];
             toM   = fromM + take;
           } else if (ci === 0) {
-            // First part — place at TAIL (end) of the block's free time
-            let rem = take;
-            let f0 = freeIntervals[freeIntervals.length - 1][1] - take;
-            // Walk backwards through free intervals to find tail start
-            let tail = take;
-            for (let fi = freeIntervals.length - 1; fi >= 0 && tail > 0; fi--) {
-              const [ff, ft] = freeIntervals[fi];
-              const avail    = ft - ff;
-              tail -= Math.min(avail, tail);
-              if (tail <= 0) { f0 = Math.max(ff, ft - (take - tail > 0 ? take - tail : 0)); break; }
-            }
             fromM = freeIntervals[freeIntervals.length - 1][1] - take;
             toM   = freeIntervals[freeIntervals.length - 1][1];
-            // Clamp fromM to block free start
             if (fromM < freeIntervals[0][0]) fromM = freeIntervals[0][0];
           } else if (ci === nParts - 1) {
-            // Last part — place at HEAD (start) of the block's free time
             fromM = freeIntervals[0][0];
             toM   = fromM + take;
           } else {
-            // Middle part — fill entire free portion of the block
             fromM = freeIntervals[0][0];
             toM   = freeIntervals[freeIntervals.length - 1][1];
           }
@@ -670,11 +608,9 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
     }
 
     const fallbackCandidates = [];
-    // Track occupied minutes per date as [fromM, toM, taskId]
     const occupiedFallback   = {};
     for (const dateStr of Object.keys(dailySlots)) occupiedFallback[dateStr] = [];
 
-    // Pre-populate with validated AI sessions
     for (const c of candidates) {
       (occupiedFallback[c.date] = occupiedFallback[c.date] || []).push([c.fromM, c.toM, c.id]);
     }
@@ -687,18 +623,13 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       if (stillNeeded <= 0) continue;
 
       const blockList = buildBlockList(meta.schedFrom, meta.schedTo);
-
-      // Floors: try full task first (as single unit), then cascading
-      const floors = [stillNeeded, ...MIN_FLOORS].filter((v, i, a) => v <= stillNeeded && a.indexOf(v) === i);
+      const floors    = [stillNeeded, ...MIN_FLOORS].filter((v, i, a) => v <= stillNeeded && a.indexOf(v) === i);
 
       let placed = false;
       for (const minFloor of floors) {
-        // Pass 1: clean chain (no other task between chain blocks)
         let sessions = tryPlaceContiguous(task.id, blockList, stillNeeded, minFloor, occupiedFallback, meta.latestEndMins, meta.schedTo, true);
-        // Pass 2: mixed chain (allow other tasks in blocks, use free gaps)
-        if (!sessions) {
+        if (!sessions)
           sessions = tryPlaceContiguous(task.id, blockList, stillNeeded, minFloor, occupiedFallback, meta.latestEndMins, meta.schedTo, false);
-        }
 
         if (sessions) {
           for (const s of sessions) {
@@ -714,7 +645,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
     const allCandidates = [...candidates, ...fallbackCandidates];
     allCandidates.sort((a, b) => a.date !== b.date ? a.date.localeCompare(b.date) : a.fromM - b.fromM);
 
-    // ── 12. Place sessions: dedup overlaps + cap to remaining ─────────────────
+    // ── 12. Place sessions: dedup overlaps + cap to remaining ───────────────────────────
     const placedMinsById = {};
     const occupiedByDate = {};
     const finalSessions  = [];
@@ -750,7 +681,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       });
     }
 
-    // ── 13. Compute warnings + unscheduled ────────────────────────────────────
+    // ── 13. Compute warnings + unscheduled ─────────────────────────────────────────────
     const warnings    = [];
     const unscheduled = [...overdueUnscheduled];
 
@@ -778,10 +709,10 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       }
     }
 
-    // ── 14. Save plan to DB ───────────────────────────────────────────────────
+    // ── 14. Save plan to DB ──────────────────────────────────────────────────────────────
     const saved = await upsertPlan(req.userId, weekStartStr, finalSessions, warnings, unscheduled);
 
-    // ── 15. Respond ───────────────────────────────────────────────────────────
+    // ── 15. Respond ───────────────────────────────────────────────────────────────────
     res.json({
       sessions:    saved.sessions    || finalSessions,
       warnings:    saved.warnings    || warnings,
@@ -795,7 +726,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
   }
 });
 
-// ─── POST /planner/schedule — save plan (called directly by frontend if needed) ──
+// ─── POST /planner/schedule ───────────────────────────────────────────────────────────────
 
 router.post('/schedule', auth, async (req, res) => {
   try {
@@ -815,7 +746,7 @@ router.post('/schedule', auth, async (req, res) => {
   }
 });
 
-// ─── GET /planner/schedule — load saved plan ──────────────────────────────────
+// ─── GET /planner/schedule ──────────────────────────────────────────────────────────────────
 
 router.get('/schedule', auth, async (req, res) => {
   try {
@@ -832,7 +763,7 @@ router.get('/schedule', auth, async (req, res) => {
   }
 });
 
-// ─── PATCH /planner/schedule/:sessionId — mark done / skip ───────────────────
+// ─── PATCH /planner/schedule/:sessionId ───────────────────────────────────────────────
 
 router.patch('/schedule/:sessionId', auth, async (req, res) => {
   try {
@@ -848,6 +779,36 @@ router.patch('/schedule/:sessionId', auth, async (req, res) => {
     if (completed !== undefined) session.completed = completed;
     if (skipped   !== undefined) session.skipped   = skipped;
     await plan.save();
+
+    // ── Sync assignment completed state ────────────────────────────────────────────────────
+    // When completed changes, check if ALL non-skipped sessions for this
+    // assignment (across all weeks) are done. If so, mark the assignment
+    // completed. If any session is un-completed, mark the assignment incomplete.
+    if (completed !== undefined && session.assignmentId) {
+      try {
+        const assignmentId = session.assignmentId.toString();
+
+        // Gather all plans that contain sessions for this assignment
+        const allPlans = await StudyPlan.find({
+          userId:   req.userId,
+          'sessions.assignmentId': session.assignmentId,
+        });
+
+        const allSessions = allPlans.flatMap(p => p.sessions)
+          .filter(s => s.assignmentId && s.assignmentId.toString() === assignmentId && !s.skipped);
+
+        const allDone = allSessions.length > 0 && allSessions.every(s => s.completed);
+
+        await Assignment.findOneAndUpdate(
+          { _id: session.assignmentId, userId: req.userId },
+          { completed: allDone },
+          { new: true },
+        );
+      } catch (syncErr) {
+        // Non-fatal: log but don't fail the request
+        console.error('PATCH /planner/schedule sync assignment:', syncErr.message);
+      }
+    }
 
     res.json({ sessionId, completed: session.completed, skipped: session.skipped });
   } catch (err) {

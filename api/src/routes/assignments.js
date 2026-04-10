@@ -9,7 +9,7 @@ function snapToQuarter(hours) {
   return Math.round(clamped * 4) / 4;
 }
 
-// ─── GET /api/assignments ─────────────────────────────────────────────────────
+// ─── GET /api/assignments ────────────────────────────────────────────────────────────────
 router.get('/', auth, async (req, res) => {
   try {
     const assignments = await Assignment
@@ -22,7 +22,7 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
-// ─── GET /api/assignments/course/:courseId ────────────────────────────────────
+// ─── GET /api/assignments/course/:courseId ────────────────────────────────────────────
 router.get('/course/:courseId', auth, async (req, res) => {
   try {
     const assignments = await Assignment
@@ -35,7 +35,7 @@ router.get('/course/:courseId', auth, async (req, res) => {
   }
 });
 
-// ─── POST /api/assignments ────────────────────────────────────────────────────
+// ─── POST /api/assignments ────────────────────────────────────────────────────────────────
 router.post('/', auth, async (req, res) => {
   try {
     const { courseId, title, description, dueDate, type, estimatedTime } = req.body;
@@ -59,8 +59,11 @@ router.post('/', auth, async (req, res) => {
   }
 });
 
-// ─── PUT /api/assignments/:id ─────────────────────────────────────────────────
-router.put('/:id', auth, async (req, res) => {
+// ─── PATCH /api/assignments/:id ───────────────────────────────────────────────────────────
+// Partial update — used by Study Planner to sync completed state from sessions.
+// Accepts any subset of: completed, estimatedTime, title, description, dueDate,
+// courseId, type.  Extra / unknown keys are silently ignored.
+router.patch('/:id', auth, async (req, res) => {
   try {
     const allowed = ['title', 'description', 'dueDate', 'courseId',
                      'type', 'estimatedTime', 'completed'];
@@ -72,7 +75,7 @@ router.put('/:id', auth, async (req, res) => {
     if ('estimatedTime' in update) {
       update.estimatedTime = update.estimatedTime != null
         ? Number(update.estimatedTime) : null;
-      update.aiGenerated = false; // manual edit clears AI flag
+      update.aiGenerated = false;
     }
 
     const assignment = await Assignment.findOneAndUpdate(
@@ -88,7 +91,36 @@ router.put('/:id', auth, async (req, res) => {
   }
 });
 
-// ─── DELETE /api/assignments/:id ──────────────────────────────────────────────
+// ─── PUT /api/assignments/:id ───────────────────────────────────────────────────────────────
+router.put('/:id', auth, async (req, res) => {
+  try {
+    const allowed = ['title', 'description', 'dueDate', 'courseId',
+                     'type', 'estimatedTime', 'completed'];
+    const update = {};
+    allowed.forEach(k => {
+      if (k in req.body) update[k] = req.body[k];
+    });
+    if ('courseId' in update && !update.courseId) update.courseId = null;
+    if ('estimatedTime' in update) {
+      update.estimatedTime = update.estimatedTime != null
+        ? Number(update.estimatedTime) : null;
+      update.aiGenerated = false;
+    }
+
+    const assignment = await Assignment.findOneAndUpdate(
+      { _id: req.params.id, userId: req.userId },
+      update,
+      { new: true }
+    ).populate('courseId', '_id title code color');
+
+    if (!assignment) return res.status(404).json({ message: 'Assignment not found' });
+    res.json(assignment);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// ─── DELETE /api/assignments/:id ─────────────────────────────────────────────────────────────
 router.delete('/:id', auth, async (req, res) => {
   try {
     const deleted = await Assignment.findOneAndDelete({
@@ -101,7 +133,7 @@ router.delete('/:id', auth, async (req, res) => {
   }
 });
 
-// ─── POST /api/assignments/:id/estimate ───────────────────────────────────────
+// ─── POST /api/assignments/:id/estimate ────────────────────────────────────────────────
 router.post('/:id/estimate', auth, async (req, res) => {
   try {
     const assignment = await Assignment.findOne({
