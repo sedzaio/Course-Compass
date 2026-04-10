@@ -54,6 +54,19 @@ function fromMins(mins) {
 
 function r4(n) { return Math.round(n * 4) / 4; }
 
+// Backfill severity on unscheduled items loaded from DB that predate the severity field.
+// Old docs have severity=undefined; default them to 'soft' so the frontend always
+// receives a valid severity string.
+function backfillUnscheduled(unscheduled) {
+  if (!Array.isArray(unscheduled)) return [];
+  return unscheduled.map(u => ({
+    assignmentId: u.assignmentId,
+    title:        u.title,
+    reason:       u.reason || '',
+    severity:     u.severity || 'soft',
+  }));
+}
+
 async function upsertPlan(userId, weekStart, sessions, warnings, unscheduled) {
   const update = {
     $set: { sessions, warnings, unscheduled, generatedAt: new Date() },
@@ -223,44 +236,28 @@ router.post('/generate', auth, async (req, res) => {
       dueDate:   { $ne: null },
     }).sort({ dueDate: 1 });
 
-    // ── 4. Classify assignments ──────────────────────────────────────────────────────
+    // ── 4. Classify assignments ────────────────────────────────────────────────────────
     //
-    // overdue  : win.latest <= today  → skip silently (past deadline, unfixable)
+    // overdue  : win.latest <= today  → skip silently
     // eligible : window overlaps this week → attempt to schedule
     //
-    // After scheduling, unplaced eligible items are further split:
-    //   critical : win.latest <= weekEnd  → window is trapped entirely this week;
-    //              no other week can save them; user MUST fix availability NOW
-    //   soft     : win.latest >  weekEnd  → window extends beyond this week;
-    //              user can try another week or add more availability
+    // After scheduling, unplaced eligible items are split:
+    //   critical : win.latest <= weekEnd  → window trapped this week; must fix availability now
+    //   soft     : win.latest >  weekEnd  → window extends beyond this week; try another week
     //
-    const overdueUnscheduled = [];
-    const eligible           = [];
+    const eligible = [];
 
     for (const a of allAssignments) {
       const win = schedulingWindow(a.dueDate, advanceDays, bufferHours);
       if (!win) continue;
-
-      if (win.latest <= today) {
-        // Past the latest schedulable moment — silently skip, do not surface to user
-        continue;
-      }
-
-      // Does the scheduling window overlap this week at all?
-      if (win.earliest > weekEnd || win.latest < weekStart) continue;
-
+      if (win.latest <= today) continue;                      // overdue — skip silently
+      if (win.earliest > weekEnd || win.latest < weekStart) continue; // not this week
       eligible.push({ a, win });
     }
 
     if (!eligible.length) {
-      const saved = await upsertPlan(req.userId, weekStartStr, [], [], []);
-      return res.json({
-        sessions:    [],
-        warnings:    [],
-        unscheduled: [],
-        hasCritical: false,
-        weekStart:   weekStartStr,
-      });
+      await upsertPlan(req.userId, weekStartStr, [], [], []);
+      return res.json({ sessions: [], warnings: [], unscheduled: [], hasCritical: false, weekStart: weekStartStr });
     }
 
     // ── 5. Count hours already placed in previous weeks ──────────────────────────────
@@ -292,7 +289,7 @@ router.post('/generate', auth, async (req, res) => {
       }
     }
 
-    // ── 7. Build assignmentMeta + aiTasks ─────────────────────────────────────────────
+    // ── 7. Build assignmentMeta + aiTasks ────────────────────────────────────────────
     const assignmentMeta = {};
     const aiTasks        = [];
 
@@ -307,14 +304,10 @@ router.post('/generate', auth, async (req, res) => {
 
       if (effectiveFrom > clampedLatest) continue;
 
-      const id            = a._id.toString();
-      const schedFromStr  = toDateStr(effectiveFrom);
-      const schedToStr    = toDateStr(clampedLatest);
+      const id           = a._id.toString();
+      const schedFromStr = toDateStr(effectiveFrom);
+      const schedToStr   = toDateStr(clampedLatest);
       const latestEndMins = clampedLatest.getUTCHours() * 60 + clampedLatest.getUTCMinutes();
-
-      // Store whether this assignment's window is trapped inside this week
-      // (win.latest falls on or before weekEnd → critical if unplaced)
-      const windowTrappedThisWeek = win.latest <= weekEnd;
 
       assignmentMeta[id] = {
         id,
@@ -324,7 +317,9 @@ router.post('/generate', auth, async (req, res) => {
         schedFrom:  schedFromStr,
         schedTo:    schedToStr,
         latestEndMins,
-        windowTrappedThisWeek,
+        // true  → window closes on or before weekEnd: this week is the ONLY chance
+        // false → window extends past weekEnd: another week may work
+        windowTrappedThisWeek: win.latest <= weekEnd,
       };
 
       aiTasks.push({
@@ -337,17 +332,11 @@ router.post('/generate', auth, async (req, res) => {
     }
 
     if (!aiTasks.length) {
-      const saved = await upsertPlan(req.userId, weekStartStr, [], [], []);
-      return res.json({
-        sessions:    [],
-        warnings:    [],
-        unscheduled: [],
-        hasCritical: false,
-        weekStart:   weekStartStr,
-      });
+      await upsertPlan(req.userId, weekStartStr, [], [], []);
+      return res.json({ sessions: [], warnings: [], unscheduled: [], hasCritical: false, weekStart: weekStartStr });
     }
 
-    // ── 8. Build per-date slot map ─────────────────────────────────────────────────
+    // ── 8. Build per-date slot map ────────────────────────────────────────────────────
     const dailySlots = {};
     for (let i = 0; i <= 6; i++) {
       const d = new Date(weekStart);
@@ -360,7 +349,6 @@ router.post('/generate', auth, async (req, res) => {
     }
 
     if (!Object.keys(dailySlots).length) {
-      // No availability slots at all this week — every eligible item gets appropriate severity
       const unscheduled = Object.values(assignmentMeta).map(meta => ({
         assignmentId: meta.id,
         title:        meta.title,
@@ -374,7 +362,7 @@ router.post('/generate', auth, async (req, res) => {
       return res.json({
         sessions:    [],
         warnings:    [],
-        unscheduled: saved.unscheduled || unscheduled,
+        unscheduled: backfillUnscheduled(saved.unscheduled),
         hasCritical,
         weekStart:   weekStartStr,
       });
@@ -415,20 +403,9 @@ R6  WHOLE TASK FIRST. Always attempt to fit the entire task in a single uninterr
 R7  CONTIGUOUS SPLITS. If a task must be split, ALL parts must be placed back-to-back
     across consecutive availability blocks with NO other task's sessions inserted
     between them.
-    - Part 1  → fills the TAIL of its block  (placed at the end of remaining free time)
-    - Middle  → fills the ENTIRE free portion of the block
-    - Last    → fills the HEAD of its block  (placed at the start of free time)
-    Try first to find a chain of blocks that are completely free of other tasks.
-    Only if no clean chain exists may you place parts around already-scheduled sessions.
 R8  CASCADING MINIMUM. When splitting, the smallest part must respect a minimum floor.
-    Try floors in order until the task can be fully scheduled:
-      Floor 1: every part ≥ 60 min
-      Floor 2: every part ≥ 45 min
-      Floor 3: every part ≥ 30 min
-      Floor 4: every part ≥ 15 min  (last resort)
-    Use the fewest parts possible at each floor before trying a lower floor.
+    Try floors in order: 60 min → 45 min → 30 min → 15 min (last resort).
 R9  ORDER IS FREE. Tasks may be scheduled in any order within their windows.
-    No due-date ordering is required.
 
 ╔════════════════════════════════════════════════════════
 SCHEDULING ALGORITHM (execute step by step)
@@ -442,28 +419,10 @@ For each task:
 
   STEP B — Try split with cascading floor:
     For minFloor in [60, 45, 30, 15]:
-      Pass 1 (clean): find the earliest contiguous chain of blocks where the
-        cumulative free minutes ≥ minutesNeeded and no other task occupies any
-        minute between the first and last block of the chain.
-      Pass 2 (mixed): if Pass 1 fails, find the earliest contiguous chain of
-        blocks (free gaps only, other tasks may already occupy parts of blocks)
-        where cumulative free gaps ≥ minutesNeeded.
-      For each segment in the chosen chain:
-        take = min(freeInThisBlock, stillNeeded)
-        take must be ≥ minFloor (except the very last segment which absorbs remainder)
-        If this segment would be < minFloor and is not the last → skip this floor, try next.
+      Find the earliest contiguous chain of blocks where cumulative free minutes ≥ minutesNeeded.
       If all segments satisfy the floor → place them. Done.
 
-  STEP C — If still unplaced → omit from sessions (will appear in warnings/unscheduled).
-
-╔════════════════════════════════════════════════════════
-PLACEMENT WITHIN A BLOCK
-╔════════════════════════════════════════════════════════
-  Single session (whole task or last part): place at START of free interval.
-  First part of a multi-part task: place at END of the block's free interval
-    (i.e., from = freeEnd − take, to = freeEnd).
-  Middle parts: fill the block's entire free interval.
-  Last part: place at START of the block's free interval (from = freeStart, to = freeStart + take).
+  STEP C — If still unplaced → omit from sessions.
 
 ╔════════════════════════════════════════════════════════
 OUTPUT (exact shape, NO extra keys, NO extra text)
@@ -496,7 +455,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       console.warn('Groq call failed — using deterministic fallback:', groqErr.response?.data || groqErr.message);
     }
 
-    // ── 10. Validate every AI session ─────────────────────────────────────────────────
+    // ── 10. Validate every AI session ────────────────────────────────────────────────
     const availByDate = {};
     for (const [dateStr, blocks] of Object.entries(dailySlots)) {
       availByDate[dateStr] = blocks.map(b => ({ fromMins: toMins(b.from), toMins: toMins(b.to) }));
@@ -522,7 +481,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
 
     candidates.sort((a, b) => a.date !== b.date ? a.date.localeCompare(b.date) : a.fromM - b.fromM);
 
-    // ── 11. Deterministic fallback ───────────────────────────────────────────────────────
+    // ── 11. Deterministic fallback ────────────────────────────────────────────────────
     const aiMinutesById = {};
     for (const c of candidates) aiMinutesById[c.id] = (aiMinutesById[c.id] || 0) + c.sessMins;
 
@@ -575,7 +534,6 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
 
           const freeIntervals = getFreeIntervals(blk.fromMins, blockTo, occ.map(([f, t]) => [f, t]));
           const blockFree     = freeIntervals.reduce((s, [f, t]) => s + t - f, 0);
-
           if (blockFree === 0) break;
 
           const take = Math.min(blockFree, targetMins - collected);
@@ -620,7 +578,6 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
 
         if (sessions.length > 0) return sessions;
       }
-
       return null;
     }
 
@@ -662,7 +619,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
     const allCandidates = [...candidates, ...fallbackCandidates];
     allCandidates.sort((a, b) => a.date !== b.date ? a.date.localeCompare(b.date) : a.fromM - b.fromM);
 
-    // ── 12. Place sessions: dedup overlaps + cap to remaining ───────────────────────────
+    // ── 12. Place sessions: dedup overlaps + cap to remaining ─────────────────────────
     const placedMinsById = {};
     const occupiedByDate = {};
     const finalSessions  = [];
@@ -698,13 +655,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       });
     }
 
-    // ── 13. Compute warnings + unscheduled (with severity) ─────────────────────────────
-    //
-    // warnings    → partially placed (some hours scheduled, some missing)
-    // unscheduled → zero hours placed
-    //   severity: 'critical' → window trapped in this week, must fix availability now
-    //   severity: 'soft'     → window extends past this week, can try another week
-    //
+    // ── 13. Compute warnings + unscheduled (with severity) ────────────────────────────
     const warnings    = [];
     const unscheduled = [];
 
@@ -716,20 +667,12 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       if (placedHours >= needed) continue;
 
       if (placedHours === 0) {
-        // Zero placed — classify by whether the window is trapped this week
         const severity = meta.windowTrappedThisWeek ? 'critical' : 'soft';
         const reason   = meta.windowTrappedThisWeek
           ? 'Must be scheduled this week but there isn\'t enough availability — adjust your availability for these days and regenerate.'
           : 'Not enough availability this week — add more availability slots or generate a different week.';
-
-        unscheduled.push({
-          assignmentId: meta.id,
-          title:        meta.title,
-          severity,
-          reason,
-        });
+        unscheduled.push({ assignmentId: meta.id, title: meta.title, severity, reason });
       } else {
-        // Partially placed
         const remaining = r4(needed - placedHours);
         warnings.push({
           assignmentId:   meta.id,
@@ -743,14 +686,13 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
 
     const hasCritical = unscheduled.some(u => u.severity === 'critical');
 
-    // ── 14. Save plan to DB ──────────────────────────────────────────────────────────────
+    // ── 14. Save + respond ────────────────────────────────────────────────────────────
     const saved = await upsertPlan(req.userId, weekStartStr, finalSessions, warnings, unscheduled);
 
-    // ── 15. Respond ───────────────────────────────────────────────────────────────────
     res.json({
       sessions:    saved.sessions    || finalSessions,
       warnings:    saved.warnings    || warnings,
-      unscheduled: saved.unscheduled || unscheduled,
+      unscheduled: backfillUnscheduled(saved.unscheduled || unscheduled),
       hasCritical,
       weekStart:   weekStartStr,
     });
@@ -767,7 +709,6 @@ router.post('/schedule', auth, async (req, res) => {
   try {
     const { weekStart, sessions, warnings, unscheduled } = req.body;
     if (!weekStart) return res.status(400).json({ message: 'weekStart is required' });
-
     const saved = await upsertPlan(
       req.userId, weekStart,
       sessions    || [],
@@ -781,7 +722,7 @@ router.post('/schedule', auth, async (req, res) => {
   }
 });
 
-// ─── GET /planner/schedule ──────────────────────────────────────────────────────────────────
+// ─── GET /planner/schedule ────────────────────────────────────────────────────────────────
 
 router.get('/schedule', auth, async (req, res) => {
   try {
@@ -791,14 +732,19 @@ router.get('/schedule', auth, async (req, res) => {
     const plan = await StudyPlan.findOne({ userId: req.userId, weekStart });
     if (!plan) return res.status(404).json({ message: 'No plan found for this week' });
 
-    res.json(plan);
+    // Backfill severity on old documents that were saved before this field existed.
+    // Mongoose default only applies on insert; old docs may have severity=undefined.
+    res.json({
+      ...plan.toObject(),
+      unscheduled: backfillUnscheduled(plan.unscheduled),
+    });
   } catch (err) {
     console.error('GET /planner/schedule:', err);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// ─── PATCH /planner/schedule/:sessionId ───────────────────────────────────────────────
+// ─── PATCH /planner/schedule/:sessionId ─────────────────────────────────────────────────
 
 router.patch('/schedule/:sessionId', auth, async (req, res) => {
   try {
