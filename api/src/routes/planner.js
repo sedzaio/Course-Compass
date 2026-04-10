@@ -113,35 +113,95 @@ router.get('/preferences', auth, async (req, res) => {
 });
 
 // ─── PUT /planner/preferences ─────────────────────────────────────────────────
+//
+//  Validation rules (all values must be whole integers — no decimals):
+//
+//  advanceDays  : integer in [2, 365]
+//  bufferHours  : integer in [1, 24]   (when stored as hours)
+//                 integer days in [1, advanceDays - 1]  (when stored as days × 24)
+//
+//  Scheduling-window floor (must be ≥ 1 day = 24 h):
+//    advanceDays × 24 − bufferHours ≥ 24
+//    ⟺  advanceDays ≥ floor(bufferHours / 24) + 1 + (bufferHours % 24 > 0 ? 0 : 0)
+//    Simplified:  advanceDays * 24 - bufferHours >= 24
 
 router.put('/preferences', auth, async (req, res) => {
   try {
     const { availability, bufferHours, advanceDays } = req.body;
 
-    if (bufferHours !== undefined) {
-      const b = Number(bufferHours);
-      if (!Number.isFinite(b) || b < 1)
-        return res.status(400).json({ message: '"Finish at least" must be a number ≥ 1.' });
+    // ── Resolve the values we'll actually validate against ───────────────────
+    // If only one of the two is being updated we need the stored value of the
+    // other so we can check the cross-field constraint.
+    let resolvedAdvance = advanceDays !== undefined ? Number(advanceDays) : undefined;
+    let resolvedBuffer  = bufferHours !== undefined ? Number(bufferHours) : undefined;
+
+    // ── advanceDays: integer in [2, 365] ─────────────────────────────────────
+    if (resolvedAdvance !== undefined) {
+      if (!Number.isInteger(resolvedAdvance))
+        return res.status(400).json({ message: '"Start scheduling up to" must be a whole number (no decimals).' });
+      if (resolvedAdvance < 2)
+        return res.status(400).json({ message: '"Start scheduling up to" must be at least 2 days.' });
+      if (resolvedAdvance > 365)
+        return res.status(400).json({ message: '"Start scheduling up to" cannot exceed 365 days.' });
     }
 
-    if (advanceDays !== undefined) {
-      const a = Number(advanceDays);
-      if (!Number.isInteger(a) || a < 1)
-        return res.status(400).json({ message: '"Start scheduling up to" must be a whole number ≥ 1.' });
-      if (a > 90)
-        return res.status(400).json({ message: '"Start scheduling up to" cannot exceed 90 days.' });
+    // ── bufferHours: integer in [1, 24] ──────────────────────────────────────
+    if (resolvedBuffer !== undefined) {
+      if (!Number.isInteger(resolvedBuffer))
+        return res.status(400).json({ message: '"Finish at least" must be a whole number (no decimals).' });
+      if (resolvedBuffer < 1)
+        return res.status(400).json({ message: '"Finish at least" must be at least 1 hour.' });
+      if (resolvedBuffer > 24)
+        return res.status(400).json({ message: '"Finish at least" cannot exceed 24 hours.' });
+    }
 
-      const currentBufDoc = await User.findById(req.userId).select('studyPlanner');
-      const currentBuf    = bufferHours !== undefined
-        ? Number(bufferHours)
-        : (currentBufDoc?.studyPlanner?.bufferHours ?? 24);
+    // ── Cross-field: window must be ≥ 1 day (24 h) ───────────────────────────
+    // We need both values; fetch the stored one for whichever is missing.
+    if (resolvedAdvance !== undefined || resolvedBuffer !== undefined) {
+      const stored = await User.findById(req.userId).select('studyPlanner');
+      const storedAdvance = stored?.studyPlanner?.advanceDays ?? 7;
+      const storedBuffer  = stored?.studyPlanner?.bufferHours ?? 24;
 
-      if (a * 24 <= currentBuf)
+      const effectiveAdvance = resolvedAdvance !== undefined ? resolvedAdvance : storedAdvance;
+      const effectiveBuffer  = resolvedBuffer  !== undefined ? resolvedBuffer  : storedBuffer;
+
+      const windowHours = effectiveAdvance * 24 - effectiveBuffer;
+
+      if (windowHours < 24) {
+        // Give a friendly, contextual error message
+        const minAdvance = Math.floor(effectiveBuffer / 24) + 2;  // smallest advance that gives ≥ 24h window
+        const maxBuffer  = effectiveAdvance * 24 - 24;             // largest buffer that gives ≥ 24h window
+
+        if (resolvedAdvance !== undefined && resolvedBuffer !== undefined) {
+          return res.status(400).json({
+            message:
+              `The scheduling window must be at least 1 day. ` +
+              `With "Start up to ${effectiveAdvance}d" and "Finish at least ${effectiveBuffer}h" ` +
+              `the window is only ${windowHours}h. ` +
+              `Either increase "Start scheduling up to" to ≥ ${minAdvance} days, ` +
+              `or decrease "Finish at least" to ≤ ${maxBuffer} hours.`,
+          });
+        }
+
+        if (resolvedAdvance !== undefined) {
+          return res.status(400).json({
+            message:
+              `"Start scheduling up to" must be at least ${minAdvance} days ` +
+              `when "Finish at least" is ${effectiveBuffer}h ` +
+              `(window = ${windowHours}h < 24h minimum).`,
+          });
+        }
+
         return res.status(400).json({
-          message: `"Start scheduling up to" (${a}d = ${a * 24}h) must be greater than "Finish at least" (${currentBuf}h).`,
+          message:
+            `"Finish at least" cannot exceed ${maxBuffer} hours ` +
+            `when "Start scheduling up to" is ${effectiveAdvance} days ` +
+            `(window = ${windowHours}h < 24h minimum).`,
         });
+      }
     }
 
+    // ── availability blocks ───────────────────────────────────────────────────
     if (availability !== undefined) {
       for (const block of availability) {
         if (!DAY_NAMES.includes(block.day))
@@ -153,10 +213,11 @@ router.put('/preferences', auth, async (req, res) => {
       }
     }
 
+    // ── Persist ───────────────────────────────────────────────────────────────
     const setFields = {};
     if (availability !== undefined) setFields['studyPlanner.availability'] = availability;
-    if (bufferHours  !== undefined) setFields['studyPlanner.bufferHours']  = Number(bufferHours);
-    if (advanceDays  !== undefined) setFields['studyPlanner.advanceDays']  = Number(advanceDays);
+    if (resolvedBuffer  !== undefined) setFields['studyPlanner.bufferHours']  = resolvedBuffer;
+    if (resolvedAdvance !== undefined) setFields['studyPlanner.advanceDays']  = resolvedAdvance;
 
     if (!Object.keys(setFields).length) {
       const u = await User.findById(req.userId).select('studyPlanner');
