@@ -11,7 +11,7 @@ const StudyPlan  = require('../models/StudyPlan');
 
 // ─── Constants ───────────────────────────────────────────────────────────────────────────
 
-const DAY_NAMES = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+const DAY_NAMES  = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
 const MIN_FLOORS = [60, 45, 30, 15];
 
 // ─── Pure Helpers ─────────────────────────────────────────────────────────────────────
@@ -77,7 +77,6 @@ async function upsertPlan(userId, weekStart, sessions, warnings, unscheduled) {
   }
 }
 
-// AI estimate helper — works for ANY assignment (manual or Canvas)
 async function aiEstimate(title) {
   try {
     const gr = await axios.post(
@@ -224,44 +223,47 @@ router.post('/generate', auth, async (req, res) => {
       dueDate:   { $ne: null },
     }).sort({ dueDate: 1 });
 
-    // ── 4. Classify: overdue (always skip) vs. eligible ──────────────────────────────
-    // An assignment is overdue when its latest scheduling time has already passed.
-    // Overdue assignments are NEVER scheduled regardless of which week is requested.
-    // They appear in the unscheduled list with a human-readable message.
+    // ── 4. Classify assignments ──────────────────────────────────────────────────────
+    //
+    // overdue  : win.latest <= today  → skip silently (past deadline, unfixable)
+    // eligible : window overlaps this week → attempt to schedule
+    //
+    // After scheduling, unplaced eligible items are further split:
+    //   critical : win.latest <= weekEnd  → window is trapped entirely this week;
+    //              no other week can save them; user MUST fix availability NOW
+    //   soft     : win.latest >  weekEnd  → window extends beyond this week;
+    //              user can try another week or add more availability
+    //
     const overdueUnscheduled = [];
     const eligible           = [];
 
     for (const a of allAssignments) {
       const win = schedulingWindow(a.dueDate, advanceDays, bufferHours);
-      // No valid window (buffer >= advance) — skip silently
       if (!win) continue;
 
-      // Overdue: latest scheduling time is in the past
       if (win.latest <= today) {
-        overdueUnscheduled.push({
-          assignmentId: a._id,
-          title:        a.title,
-          reason:       `Deadline has passed — latest scheduling time was ${toDateStr(win.latest)}.`,
-        });
-        continue; // never schedule this in any week
+        // Past the latest schedulable moment — silently skip, do not surface to user
+        continue;
       }
 
       // Does the scheduling window overlap this week at all?
       if (win.earliest > weekEnd || win.latest < weekStart) continue;
+
       eligible.push({ a, win });
     }
 
     if (!eligible.length) {
-      const saved = await upsertPlan(req.userId, weekStartStr, [], [], overdueUnscheduled);
+      const saved = await upsertPlan(req.userId, weekStartStr, [], [], []);
       return res.json({
-        sessions:    saved.sessions    || [],
-        warnings:    saved.warnings    || [],
-        unscheduled: saved.unscheduled || [],
+        sessions:    [],
+        warnings:    [],
+        unscheduled: [],
+        hasCritical: false,
         weekStart:   weekStartStr,
       });
     }
 
-    // ── 5. Count hours already placed in PREVIOUS weeks (skip skipped) ──────────
+    // ── 5. Count hours already placed in previous weeks ──────────────────────────────
     const previousPlans = await StudyPlan.find({
       userId:    req.userId,
       weekStart: { $lt: weekStartStr },
@@ -276,9 +278,7 @@ router.post('/generate', auth, async (req, res) => {
       }
     }
 
-    // ── 6. Ensure ALL assignments have an estimated time ───────────────────────────
-    // Applies to both manual and Canvas assignments with no estimate.
-    // Falls back to 1h if the AI call fails.
+    // ── 6. AI estimate for assignments without one ────────────────────────────────────
     for (const { a } of eligible) {
       if (a.estimatedTime == null) {
         const est = await aiEstimate(a.title);
@@ -287,12 +287,12 @@ router.post('/generate', auth, async (req, res) => {
           a.aiGenerated   = true;
           await a.save();
         } else {
-          a.estimatedTime = 1; // safe fallback — not persisted
+          a.estimatedTime = 1;
         }
       }
     }
 
-    // ── 7. Build assignmentMeta + aiTasks ─────────────────────────────────────────
+    // ── 7. Build assignmentMeta + aiTasks ─────────────────────────────────────────────
     const assignmentMeta = {};
     const aiTasks        = [];
 
@@ -312,14 +312,19 @@ router.post('/generate', auth, async (req, res) => {
       const schedToStr    = toDateStr(clampedLatest);
       const latestEndMins = clampedLatest.getUTCHours() * 60 + clampedLatest.getUTCMinutes();
 
+      // Store whether this assignment's window is trapped inside this week
+      // (win.latest falls on or before weekEnd → critical if unplaced)
+      const windowTrappedThisWeek = win.latest <= weekEnd;
+
       assignmentMeta[id] = {
         id,
-        title:         a.title,
-        courseId:      a.courseId ? a.courseId.toString() : null,
+        title:      a.title,
+        courseId:   a.courseId ? a.courseId.toString() : null,
         remaining,
-        schedFrom:     schedFromStr,
-        schedTo:       schedToStr,
+        schedFrom:  schedFromStr,
+        schedTo:    schedToStr,
         latestEndMins,
+        windowTrappedThisWeek,
       };
 
       aiTasks.push({
@@ -332,11 +337,12 @@ router.post('/generate', auth, async (req, res) => {
     }
 
     if (!aiTasks.length) {
-      const saved = await upsertPlan(req.userId, weekStartStr, [], [], overdueUnscheduled);
+      const saved = await upsertPlan(req.userId, weekStartStr, [], [], []);
       return res.json({
-        sessions:    saved.sessions    || [],
-        warnings:    saved.warnings    || [],
-        unscheduled: saved.unscheduled || [],
+        sessions:    [],
+        warnings:    [],
+        unscheduled: [],
+        hasCritical: false,
         weekStart:   weekStartStr,
       });
     }
@@ -354,11 +360,22 @@ router.post('/generate', auth, async (req, res) => {
     }
 
     if (!Object.keys(dailySlots).length) {
-      const saved = await upsertPlan(req.userId, weekStartStr, [], [], overdueUnscheduled);
+      // No availability slots at all this week — every eligible item gets appropriate severity
+      const unscheduled = Object.values(assignmentMeta).map(meta => ({
+        assignmentId: meta.id,
+        title:        meta.title,
+        severity:     meta.windowTrappedThisWeek ? 'critical' : 'soft',
+        reason:       meta.windowTrappedThisWeek
+          ? 'Must be scheduled this week but no availability is set for these days.'
+          : 'No availability set for this week — try a different week or add availability.',
+      }));
+      const hasCritical = unscheduled.some(u => u.severity === 'critical');
+      const saved = await upsertPlan(req.userId, weekStartStr, [], [], unscheduled);
       return res.json({
-        sessions:    saved.sessions    || [],
-        warnings:    saved.warnings    || [],
-        unscheduled: saved.unscheduled || overdueUnscheduled,
+        sessions:    [],
+        warnings:    [],
+        unscheduled: saved.unscheduled || unscheduled,
+        hasCritical,
         weekStart:   weekStartStr,
       });
     }
@@ -681,23 +698,38 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       });
     }
 
-    // ── 13. Compute warnings + unscheduled ─────────────────────────────────────────────
+    // ── 13. Compute warnings + unscheduled (with severity) ─────────────────────────────
+    //
+    // warnings    → partially placed (some hours scheduled, some missing)
+    // unscheduled → zero hours placed
+    //   severity: 'critical' → window trapped in this week, must fix availability now
+    //   severity: 'soft'     → window extends past this week, can try another week
+    //
     const warnings    = [];
-    const unscheduled = [...overdueUnscheduled];
+    const unscheduled = [];
 
     for (const meta of Object.values(assignmentMeta)) {
       const placedMins  = placedMinsById[meta.id] || 0;
       const placedHours = r4(placedMins / 60);
       const needed      = meta.remaining;
+
       if (placedHours >= needed) continue;
 
       if (placedHours === 0) {
+        // Zero placed — classify by whether the window is trapped this week
+        const severity = meta.windowTrappedThisWeek ? 'critical' : 'soft';
+        const reason   = meta.windowTrappedThisWeek
+          ? 'Must be scheduled this week but there isn\'t enough availability — adjust your availability for these days and regenerate.'
+          : 'Not enough availability this week — add more availability slots or generate a different week.';
+
         unscheduled.push({
           assignmentId: meta.id,
           title:        meta.title,
-          reason:       'No available time this week — will be attempted in next week\'s plan.',
+          severity,
+          reason,
         });
       } else {
+        // Partially placed
         const remaining = r4(needed - placedHours);
         warnings.push({
           assignmentId:   meta.id,
@@ -709,6 +741,8 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       }
     }
 
+    const hasCritical = unscheduled.some(u => u.severity === 'critical');
+
     // ── 14. Save plan to DB ──────────────────────────────────────────────────────────────
     const saved = await upsertPlan(req.userId, weekStartStr, finalSessions, warnings, unscheduled);
 
@@ -717,6 +751,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       sessions:    saved.sessions    || finalSessions,
       warnings:    saved.warnings    || warnings,
       unscheduled: saved.unscheduled || unscheduled,
+      hasCritical,
       weekStart:   weekStartStr,
     });
 
@@ -780,32 +815,22 @@ router.patch('/schedule/:sessionId', auth, async (req, res) => {
     if (skipped   !== undefined) session.skipped   = skipped;
     await plan.save();
 
-    // ── Sync assignment completed state ────────────────────────────────────────────────────
-    // When completed changes, check if ALL non-skipped sessions for this
-    // assignment (across all weeks) are done. If so, mark the assignment
-    // completed. If any session is un-completed, mark the assignment incomplete.
     if (completed !== undefined && session.assignmentId) {
       try {
         const assignmentId = session.assignmentId.toString();
-
-        // Gather all plans that contain sessions for this assignment
         const allPlans = await StudyPlan.find({
           userId:   req.userId,
           'sessions.assignmentId': session.assignmentId,
         });
-
         const allSessions = allPlans.flatMap(p => p.sessions)
           .filter(s => s.assignmentId && s.assignmentId.toString() === assignmentId && !s.skipped);
-
         const allDone = allSessions.length > 0 && allSessions.every(s => s.completed);
-
         await Assignment.findOneAndUpdate(
           { _id: session.assignmentId, userId: req.userId },
           { completed: allDone },
           { new: true },
         );
       } catch (syncErr) {
-        // Non-fatal: log but don't fail the request
         console.error('PATCH /planner/schedule sync assignment:', syncErr.message);
       }
     }
