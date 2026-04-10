@@ -13,6 +13,10 @@ const StudyPlan  = require('../models/StudyPlan');
 
 const DAY_NAMES = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
 
+// Cascading minimum session floors (minutes). Tried in order.
+// Index 0 = "full task in one slot" — computed per-task at runtime.
+const MIN_FLOORS = [60, 45, 30, 15];
+
 // ─── Pure Helpers ─────────────────────────────────────────────────────────────
 
 /** Date → "YYYY-MM-DD" (UTC) */
@@ -81,7 +85,6 @@ async function upsertPlan(userId, weekStart, sessions, warnings, unscheduled) {
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
   } catch (err) {
-    // E11000 can happen on concurrent upserts — retry once with a plain update
     if (err.code === 11000) {
       return await StudyPlan.findOneAndUpdate(
         { userId, weekStart },
@@ -225,7 +228,6 @@ router.post('/generate', auth, async (req, res) => {
     weekEnd.setUTCHours(23, 59, 59, 999);
     const weekEndStr = toDateStr(weekEnd);
 
-    // Current week → schedule from today; future week → schedule from weekStart.
     const scheduleFrom    = weekStart > today ? weekStart : today;
     const scheduleFromStr = toDateStr(scheduleFrom);
 
@@ -401,7 +403,7 @@ INPUT
     hours : TOTAL hours that MUST be scheduled across all sessions for this task
     from  : earliest DATE (inclusive) any session may be placed
     to    : latest DATE (inclusive) any session may be placed
-    due   : assignment due date — use for priority only
+    due   : assignment due date — for reference only
 
 ════════════════════════════════════════════════════════
 STRICT RULES
@@ -411,26 +413,63 @@ R2  DATE WINDOW. session.date must satisfy: task.from ≤ date ≤ task.to.
 R3  NO OVERLAP. Two sessions on the same date must NOT share any minute.
 R4  EXACT HOURS. Sum of all session durations for a task MUST equal task.hours exactly.
     Duration in minutes = toMins(to) − toMins(from). Compute arithmetically.
-R5  PRIORITY. Schedule earliest-due tasks first.
-R6  GREEDY FILL. Fill every available slot minute before leaving any task incomplete.
+R5  GREEDY FILL. Fill every available slot minute before leaving any task incomplete.
     Total available: ${totalAvailMins} min. Total needed: ${totalNeededMins} min.
     If available ≥ needed, ALL tasks must be fully scheduled.
-R7  SPLIT LARGE TASKS. Split across multiple blocks or days as needed.
-R8  MINIMUM SESSION LENGTH. Each session ≥ 15 minutes.
+R6  WHOLE TASK FIRST. Always attempt to fit the entire task in a single uninterrupted
+    slot before considering any split.
+R7  CONTIGUOUS SPLITS. If a task must be split, ALL parts must be placed back-to-back
+    across consecutive availability blocks with NO other task's sessions inserted
+    between them.
+    - Part 1  → fills the TAIL of its block  (placed at the end of remaining free time)
+    - Middle  → fills the ENTIRE free portion of the block
+    - Last    → fills the HEAD of its block  (placed at the start of free time)
+    Try first to find a chain of blocks that are completely free of other tasks.
+    Only if no clean chain exists may you place parts around already-scheduled sessions.
+R8  CASCADING MINIMUM. When splitting, the smallest part must respect a minimum floor.
+    Try floors in order until the task can be fully scheduled:
+      Floor 1: every part ≥ 60 min
+      Floor 2: every part ≥ 45 min
+      Floor 3: every part ≥ 30 min
+      Floor 4: every part ≥ 15 min  (last resort)
+    Use the fewest parts possible at each floor before trying a lower floor.
+R9  ORDER IS FREE. Tasks may be scheduled in any order within their windows.
+    No due-date ordering is required.
 
 ════════════════════════════════════════════════════════
 SCHEDULING ALGORITHM (execute step by step)
 ════════════════════════════════════════════════════════
-1. Sort tasks by due date ascending.
-2. For each task:
-   a. minutesNeeded = round(hours × 60).
-   b. Iterate dates from task.from to task.to ascending.
-   c. On each date, iterate available slots ascending by from-time.
-   d. freeMinutes = slot.toMins − max(slot.fromMins, lastUsedMin on this date).
-   e. take = min(freeMinutes, minutesNeeded). Must be ≥ 15.
-   f. Emit { id, date, from: HH:mm(start), to: HH:mm(start+take) }.
-   g. minutesNeeded -= take. If 0, move to next task.
-3. Tasks with no valid slots are simply omitted from sessions.
+For each task:
+  minutesNeeded = round(hours × 60)
+
+  STEP A — Try whole task (no split):
+    Scan slots in chronological order within [task.from … task.to].
+    If any single contiguous free interval ≥ minutesNeeded exists → place it there. Done.
+
+  STEP B — Try split with cascading floor:
+    For minFloor in [60, 45, 30, 15]:
+      Pass 1 (clean): find the earliest contiguous chain of blocks where the
+        cumulative free minutes ≥ minutesNeeded and no other task occupies any
+        minute between the first and last block of the chain.
+      Pass 2 (mixed): if Pass 1 fails, find the earliest contiguous chain of
+        blocks (free gaps only, other tasks may already occupy parts of blocks)
+        where cumulative free gaps ≥ minutesNeeded.
+      For each segment in the chosen chain:
+        take = min(freeInThisBlock, stillNeeded)
+        take must be ≥ minFloor (except the very last segment which absorbs remainder)
+        If this segment would be < minFloor and is not the last → skip this floor, try next.
+      If all segments satisfy the floor → place them. Done.
+
+  STEP C — If still unplaced → omit from sessions (will appear in warnings/unscheduled).
+
+════════════════════════════════════════════════════════
+PLACEMENT WITHIN A BLOCK
+════════════════════════════════════════════════════════
+  Single session (whole task or last part): place at START of free interval.
+  First part of a multi-part task: place at END of the block's free interval
+    (i.e., from = freeEnd − take, to = freeEnd).
+  Middle parts: fill the block's entire free interval.
+  Last part: place at START of the block's free interval (from = freeStart, to = freeStart + take).
 
 ════════════════════════════════════════════════════════
 OUTPUT (exact shape, NO extra keys, NO extra text)
@@ -490,72 +529,184 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
     candidates.sort((a, b) => a.date !== b.date ? a.date.localeCompare(b.date) : a.fromM - b.fromM);
 
     // ── 11. Deterministic fallback — fill anything the AI missed ──────────────
+    //
+    // For each unplaced (or partially placed) task, find a CONTIGUOUS CHAIN of
+    // free intervals summing to targetMins, respecting the cascading minimum floor.
+    // "Contiguous" = consecutive in the chronological ordered list of availability
+    // blocks — no other task may have sessions between the first and last block.
+    //
+    // Pass 1 (clean): only consider chains where other tasks occupy nothing between
+    //   the first and last block of the chain.
+    // Pass 2 (mixed): allow other tasks in blocks; use only the free gaps within each block.
+
     const aiMinutesById = {};
     for (const c of candidates) aiMinutesById[c.id] = (aiMinutesById[c.id] || 0) + c.sessMins;
 
-    const occupiedFallback = {};
-    for (const dateStr of Object.keys(dailySlots)) occupiedFallback[dateStr] = [];
-
-    const sortedTasks        = aiTasks.slice().sort((a, b) => a.due.localeCompare(b.due));
-    const fallbackCandidates = [];
-
-    for (const task of sortedTasks) {
-      const meta           = assignmentMeta[task.id];
-      const targetMins     = Math.round(meta.remaining * 60);
-      const alreadyCovered = aiMinutesById[task.id] || 0;
-      let   stillNeeded    = targetMins - alreadyCovered;
-      if (stillNeeded <= 0) continue;
-
-      const dateStart = parseDate(meta.schedFrom);
-      const dateEnd   = parseDate(meta.schedTo);
-
-      for (
-        let cur = new Date(dateStart);
-        cur <= dateEnd && stillNeeded > 0;
-        cur.setUTCDate(cur.getUTCDate() + 1)
-      ) {
+    // Build ordered list of all (date, blockIndex) entries within a task's window.
+    function buildBlockList(schedFrom, schedTo) {
+      const result = [];
+      const end    = parseDate(schedTo);
+      for (let cur = parseDate(schedFrom); cur <= end; cur.setUTCDate(cur.getUTCDate() + 1)) {
         const dateStr = toDateStr(cur);
         const blocks  = availByDate[dateStr];
         if (!blocks) continue;
+        for (let bi = 0; bi < blocks.length; bi++) {
+          result.push({ dateStr, bi, fromMins: blocks[bi].fromMins, toMins: blocks[bi].toMins });
+        }
+      }
+      return result;
+    }
 
-        const used = occupiedFallback[dateStr] || [];
+    // Return free intervals within a block given occupied [fromM, toM] pairs.
+    function getFreeIntervals(blockFrom, blockTo, occupied) {
+      const sorted = occupied
+        .filter(([f, t]) => f < blockTo && t > blockFrom)
+        .sort((a, b) => a[0] - b[0]);
+      let cursor = blockFrom;
+      const free = [];
+      for (const [oF, oT] of sorted) {
+        if (cursor < oF) free.push([cursor, oF]);
+        cursor = Math.max(cursor, oT);
+      }
+      if (cursor < blockTo) free.push([cursor, blockTo]);
+      return free;
+    }
 
-        for (const block of blocks) {
-          if (stillNeeded <= 0) break;
+    // Try to place a contiguous chain for `taskId` with given minFloor.
+    // occupiedByDate: { dateStr: [[fromM, toM, taskId], ...] }
+    // cleanPass: if true, break chain the moment another task occupies any minute
+    //   between the chain's start block and the current block.
+    // Returns array of session candidates or null.
+    function tryPlaceContiguous(taskId, blockList, targetMins, minFloor, occupiedByDate, latestEndMins, schedTo, cleanPass) {
+      for (let startIdx = 0; startIdx < blockList.length; startIdx++) {
+        const chain     = [];
+        let   collected = 0;
+        let   chainBroken = false;
 
-          const overlapping = used
-            .filter(([f, t]) => f < block.toMins && t > block.fromMins)
-            .sort((a, b) => a[0] - b[0]);
+        for (let i = startIdx; i < blockList.length && collected < targetMins; i++) {
+          const blk = blockList[i];
+          const occ = (occupiedByDate[blk.dateStr] || []);
 
-          let cursor = block.fromMins;
-          const freeIntervals = [];
-          for (const [oF, oT] of overlapping) {
-            if (cursor < oF) freeIntervals.push([cursor, oF]);
-            cursor = Math.max(cursor, oT);
+          if (cleanPass && i > startIdx) {
+            // If any other task occupies anything in this block, chain is broken
+            const hasOther = occ.some(([f, t, tid]) => tid !== taskId && f < blk.toMins && t > blk.fromMins);
+            if (hasOther) { chainBroken = true; break; }
           }
-          if (cursor < block.toMins) freeIntervals.push([cursor, block.toMins]);
 
-          for (const [freeFrom, freeTo] of freeIntervals) {
-            if (stillNeeded <= 0) break;
-            const available = freeTo - freeFrom;
-            if (available < 15) continue;
-            const take = Math.min(available, stillNeeded);
-            if (take < 15) continue;
+          // Compute effective ceiling for schedTo date
+          const blockTo = (blk.dateStr === schedTo && latestEndMins > 0)
+            ? Math.min(blk.toMins, latestEndMins)
+            : blk.toMins;
+          if (blockTo <= blk.fromMins) { chainBroken = true; break; }
 
-            const sessionTo = freeFrom + take;
-            if (dateStr === meta.schedTo && meta.latestEndMins > 0 && sessionTo > meta.latestEndMins) {
-              const capped = meta.latestEndMins - freeFrom;
-              if (capped < 15) continue;
-              const cappedTo = freeFrom + capped;
-              fallbackCandidates.push({ id: task.id, date: dateStr, fromM: freeFrom, toM: cappedTo, sessMins: capped });
-              occupiedFallback[dateStr].push([freeFrom, cappedTo]);
-              stillNeeded -= capped;
-            } else {
-              fallbackCandidates.push({ id: task.id, date: dateStr, fromM: freeFrom, toM: sessionTo, sessMins: take });
-              occupiedFallback[dateStr].push([freeFrom, sessionTo]);
-              stillNeeded -= take;
+          const freeIntervals = getFreeIntervals(blk.fromMins, blockTo, occ.map(([f, t]) => [f, t]));
+          const blockFree     = freeIntervals.reduce((s, [f, t]) => s + t - f, 0);
+
+          if (blockFree === 0) { chainBroken = true; break; } // gap with no free time breaks contiguity
+
+          const take = Math.min(blockFree, targetMins - collected);
+          chain.push({ blk, freeIntervals, take, blockFree, blockTo });
+          collected += take;
+        }
+
+        if (collected < targetMins) continue;
+
+        // Validate min floor for every segment except the last
+        let valid = true;
+        for (let ci = 0; ci < chain.length - 1; ci++) {
+          if (chain[ci].take < minFloor) { valid = false; break; }
+        }
+        if (chain[chain.length - 1].take < minFloor) valid = false;
+
+        if (!valid) continue;
+
+        // Build actual sessions from chain
+        const sessions = [];
+        const nParts   = chain.length;
+
+        for (let ci = 0; ci < nParts; ci++) {
+          const { blk, freeIntervals, take } = chain[ci];
+          let fromM, toM;
+
+          if (nParts === 1) {
+            // Single session — place at start of first free interval
+            fromM = freeIntervals[0][0];
+            toM   = fromM + take;
+          } else if (ci === 0) {
+            // First part — place at TAIL (end) of the block's free time
+            let rem = take;
+            let f0 = freeIntervals[freeIntervals.length - 1][1] - take;
+            // Walk backwards through free intervals to find tail start
+            let tail = take;
+            for (let fi = freeIntervals.length - 1; fi >= 0 && tail > 0; fi--) {
+              const [ff, ft] = freeIntervals[fi];
+              const avail    = ft - ff;
+              tail -= Math.min(avail, tail);
+              if (tail <= 0) { f0 = Math.max(ff, ft - (take - tail > 0 ? take - tail : 0)); break; }
             }
+            fromM = freeIntervals[freeIntervals.length - 1][1] - take;
+            toM   = freeIntervals[freeIntervals.length - 1][1];
+            // Clamp fromM to block free start
+            if (fromM < freeIntervals[0][0]) fromM = freeIntervals[0][0];
+          } else if (ci === nParts - 1) {
+            // Last part — place at HEAD (start) of the block's free time
+            fromM = freeIntervals[0][0];
+            toM   = fromM + take;
+          } else {
+            // Middle part — fill entire free portion of the block
+            fromM = freeIntervals[0][0];
+            toM   = freeIntervals[freeIntervals.length - 1][1];
           }
+
+          if (toM > fromM) {
+            sessions.push({ id: taskId, date: blk.dateStr, fromM, toM, sessMins: toM - fromM });
+          }
+        }
+
+        if (sessions.length > 0) return sessions;
+      }
+
+      return null;
+    }
+
+    const fallbackCandidates = [];
+    // Track occupied minutes per date as [fromM, toM, taskId]
+    const occupiedFallback   = {};
+    for (const dateStr of Object.keys(dailySlots)) occupiedFallback[dateStr] = [];
+
+    // Pre-populate with validated AI sessions
+    for (const c of candidates) {
+      (occupiedFallback[c.date] = occupiedFallback[c.date] || []).push([c.fromM, c.toM, c.id]);
+    }
+
+    for (const task of aiTasks) {
+      const meta        = assignmentMeta[task.id];
+      const targetMins  = Math.round(meta.remaining * 60);
+      const alreadyDone = aiMinutesById[task.id] || 0;
+      const stillNeeded = targetMins - alreadyDone;
+      if (stillNeeded <= 0) continue;
+
+      const blockList = buildBlockList(meta.schedFrom, meta.schedTo);
+
+      // Floors: try full task first (as single unit), then cascading
+      const floors = [stillNeeded, ...MIN_FLOORS].filter((v, i, a) => v <= stillNeeded && a.indexOf(v) === i);
+
+      let placed = false;
+      for (const minFloor of floors) {
+        // Pass 1: clean chain (no other task between chain blocks)
+        let sessions = tryPlaceContiguous(task.id, blockList, stillNeeded, minFloor, occupiedFallback, meta.latestEndMins, meta.schedTo, true);
+        // Pass 2: mixed chain (allow other tasks in blocks, use free gaps)
+        if (!sessions) {
+          sessions = tryPlaceContiguous(task.id, blockList, stillNeeded, minFloor, occupiedFallback, meta.latestEndMins, meta.schedTo, false);
+        }
+
+        if (sessions) {
+          for (const s of sessions) {
+            fallbackCandidates.push(s);
+            (occupiedFallback[s.date] = occupiedFallback[s.date] || []).push([s.fromM, s.toM, s.id]);
+          }
+          placed = true;
+          break;
         }
       }
     }
@@ -610,15 +761,19 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       if (placedHours >= needed) continue;
 
       if (placedHours === 0) {
-        unscheduled.push({ assignmentId: meta.id, title: meta.title, reason: 'No available time slots' });
+        unscheduled.push({
+          assignmentId: meta.id,
+          title:        meta.title,
+          reason:       'No available time this week — will be attempted in next week\'s plan.',
+        });
       } else {
-        const removed = r4(needed - placedHours);
+        const remaining = r4(needed - placedHours);
         warnings.push({
           assignmentId:   meta.id,
           title:          meta.title,
           scheduledHours: placedHours,
           neededHours:    needed,
-          message:        `Partially scheduled (${removed}h could not fit in your availability window)`,
+          message:        `${placedHours}h scheduled this week — the remaining ${remaining}h will carry over to next week's plan.`,
         });
       }
     }
