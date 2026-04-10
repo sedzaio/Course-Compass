@@ -245,6 +245,11 @@ export default function StudyPlanner(): JSX.Element {
   const [bufferHours, setBufferHours] = useState<number>(24);
   const [advanceDays, setAdvanceDays] = useState<number>(7);
 
+  // ── Gate: don't load plan until preferences have been fetched ─────────────────────
+  // This prevents loadPlan from firing twice with two different weekStartStr values
+  // (once with the default "sunday" and again after prefs say "monday").
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
+
   const [courses, setCourses] = useState<Course[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
 
@@ -258,7 +263,7 @@ export default function StudyPlanner(): JSX.Element {
   const [warnings, setWarnings]       = useState<PlanWarning[]>([]);
   const [unscheduled, setUnscheduled] = useState<PlanUnscheduled[]>([]);
   const [hasPlan, setHasPlan]         = useState(false);
-  const [planLoading, setPlanLoading] = useState(false);
+  const [planLoading, setPlanLoading] = useState(true);
   const [genLoading, setGenLoading]   = useState(false);
   const [planError, setPlanError]     = useState("");
   const [noAvail, setNoAvail]         = useState(false);
@@ -269,6 +274,9 @@ export default function StudyPlanner(): JSX.Element {
 
   const [celebrating, setCelebrating] = useState<Set<string>>(new Set());
   const [detailSession, setDetailSession] = useState<StudySession | null>(null);
+
+  // ── Guard: autoGenerate fires exactly once after initial load ─────────────────────
+  const autoGenerateFiredRef = useRef(false);
 
   // ── Split unscheduled into critical vs soft ─────────────────────────────────────────
   const criticalItems = useMemo(
@@ -288,6 +296,8 @@ export default function StudyPlanner(): JSX.Element {
 
   useEffect(() => { if (!token) navigate("/login"); }, [token, navigate]);
 
+  // ── Load preferences FIRST, then set prefsLoaded = true ──────────────────────────
+  // loadPlan is gated on prefsLoaded so it always uses the correct weekStartStr.
   useEffect(() => {
     if (!token) return;
     const h = { headers: { Authorization: `Bearer ${token}` } };
@@ -315,7 +325,11 @@ export default function StudyPlanner(): JSX.Element {
           ? assignRes.data.assignments
           : [];
       setAssignments(ad);
-    }).catch(() => {});
+    }).catch(() => {
+      // Even on failure, unblock so the UI doesn't hang
+    }).finally(() => {
+      setPrefsLoaded(true);
+    });
   }, [token]);
 
   useEffect(() => {
@@ -348,17 +362,28 @@ export default function StudyPlanner(): JSX.Element {
       .finally(() => setPlanLoading(false));
   }, [token, weekStartStr]);
 
-  useEffect(() => { loadPlan(); }, [loadPlan]);
-  
-  // ── Auto-generate if ?autoGenerate=true and no plan exists ──────────────────
-useEffect(() => {
-  if (searchParams.get("autoGenerate") !== "true") return;
-  if (planLoading) return;
-  if (hasPlan) return; // plan already exists — nothing to do
-  // Only trigger once plan-loading has resolved and no plan found
-  handleGenerate();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [planLoading, hasPlan]);
+  // ── Only run loadPlan after preferences have settled ─────────────────────────────
+  // Without this gate, loadPlan fires with weekStartStr="2026-04-06" (sunday default),
+  // then fires again with weekStartStr="2026-04-07" (monday from prefs), causing two
+  // separate GET calls. If autoGenerate=true, the first 404 triggers generation with
+  // the wrong weekStart, creating a duplicate/stale document.
+  useEffect(() => {
+    if (!prefsLoaded) return;
+    loadPlan();
+  }, [loadPlan, prefsLoaded]);
+
+  // ── Auto-generate if ?autoGenerate=true — fires exactly once after load resolves ──
+  // Also gated on prefsLoaded so weekStartStr is final before handleGenerate is called.
+  useEffect(() => {
+    if (searchParams.get("autoGenerate") !== "true") return;
+    if (!prefsLoaded) return;
+    if (planLoading) return;
+    if (hasPlan) return;
+    if (autoGenerateFiredRef.current) return;
+    autoGenerateFiredRef.current = true;
+    handleGenerate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefsLoaded, planLoading, hasPlan]);
 
   useEffect(() => {
     function handler(e: MouseEvent) {
