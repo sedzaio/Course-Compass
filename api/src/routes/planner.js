@@ -54,6 +54,16 @@ function fromMins(mins) {
 
 function r4(n) { return Math.round(n * 4) / 4; }
 
+// ─── Get all dates between two date strings (inclusive) ──────────────────────────────
+function getDatesBetween(fromStr, toStr) {
+  const dates = [];
+  const end   = parseDate(toStr);
+  for (let cur = parseDate(fromStr); cur <= end; cur.setUTCDate(cur.getUTCDate() + 1)) {
+    dates.push(toDateStr(new Date(cur)));
+  }
+  return dates;
+}
+
 async function upsertPlan(userId, weekStart, sessions, warnings, unscheduled) {
   const update = {
     $set: { sessions, warnings, unscheduled, generatedAt: new Date() },
@@ -225,25 +235,25 @@ router.post('/generate', auth, async (req, res) => {
     }).sort({ dueDate: 1 });
 
     // ── 4. Classify: overdue (always skip) vs. eligible ──────────────────────────────
-    // An assignment is overdue when its latest scheduling time has already passed.
-    // Overdue assignments are NEVER scheduled regardless of which week is requested.
-    // They appear in the unscheduled list with a human-readable message.
+    // Overdue assignments are NEVER scheduled — silently excluded from unscheduled
+    // list (frontend hides them anyway, no actionable message needed).
     const overdueUnscheduled = [];
     const eligible           = [];
 
     for (const a of allAssignments) {
       const win = schedulingWindow(a.dueDate, advanceDays, bufferHours);
-      // No valid window (buffer >= advance) — skip silently
       if (!win) continue;
 
-      // Overdue: latest scheduling time is in the past
+      // Overdue: latest scheduling time is in the past — skip silently
       if (win.latest <= today) {
+        // Still include in list with severity so frontend can filter cleanly
         overdueUnscheduled.push({
           assignmentId: a._id,
           title:        a.title,
+          severity:     'overdue',
           reason:       `Deadline has passed — latest scheduling time was ${toDateStr(win.latest)}.`,
         });
-        continue; // never schedule this in any week
+        continue;
       }
 
       // Does the scheduling window overlap this week at all?
@@ -277,8 +287,6 @@ router.post('/generate', auth, async (req, res) => {
     }
 
     // ── 6. Ensure ALL assignments have an estimated time ───────────────────────────
-    // Applies to both manual and Canvas assignments with no estimate.
-    // Falls back to 1h if the AI call fails.
     for (const { a } of eligible) {
       if (a.estimatedTime == null) {
         const est = await aiEstimate(a.title);
@@ -287,7 +295,7 @@ router.post('/generate', auth, async (req, res) => {
           a.aiGenerated   = true;
           await a.save();
         } else {
-          a.estimatedTime = 1; // safe fallback — not persisted
+          a.estimatedTime = 1;
         }
       }
     }
@@ -681,7 +689,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       });
     }
 
-    // ── 13. Compute warnings + unscheduled ─────────────────────────────────────────────
+    // ── 13. Compute warnings + unscheduled (with severity classification) ──────────────
     const warnings    = [];
     const unscheduled = [...overdueUnscheduled];
 
@@ -692,12 +700,101 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       if (placedHours >= needed) continue;
 
       if (placedHours === 0) {
-        unscheduled.push({
-          assignmentId: meta.id,
-          title:        meta.title,
-          reason:       'No available time this week — will be attempted in next week\'s plan.',
-        });
+        // ── Classify: critical vs insufficient_time ──────────────────────────────────
+        // Get all dates in this task's scheduling window that fall within this week
+        const windowDates   = getDatesBetween(meta.schedFrom, meta.schedTo);
+        const hasSomeBlock  = windowDates.some(d => availByDate[d] && availByDate[d].length > 0);
+
+        if (!hasSomeBlock) {
+          // CRITICAL: zero availability blocks fall within the scheduling window
+          // Force-place the task on the best available day
+          const neededMins = Math.round(needed * 60);
+
+          // Find best day: walk backwards from schedTo looking for any block
+          let forcedDate   = null;
+          let forcedFromM  = null;
+          let forcedToM    = null;
+
+          // Pass 1: walk backwards from schedTo within the full week
+          const allWeekDates = getDatesBetween(scheduleFromStr, weekEndStr);
+          const datesDesc    = [...allWeekDates].reverse();
+
+          // Prefer days closest to the deadline
+          for (const d of datesDesc) {
+            const blocks = availByDate[d];
+            if (!blocks || blocks.length === 0) continue;
+            // Find the first block on this day with enough free space (or use full block)
+            const occ       = occupiedByDate[d] || [];
+            for (const blk of blocks) {
+              const freeInts = getFreeIntervals(blk.fromMins, blk.toMins, occ.map(([f, t]) => [f, t]));
+              const freeMin  = freeInts.reduce((s, [f, t]) => s + t - f, 0);
+              if (freeMin > 0) {
+                forcedDate  = d;
+                // Place full task starting at first free slot of this block
+                forcedFromM = freeInts[0][0];
+                forcedToM   = forcedFromM + neededMins;
+                // Cap to block end — if spills over, use full block
+                if (forcedToM > blk.toMins) forcedToM = blk.toMins;
+                break;
+              }
+            }
+            if (forcedDate) break;
+          }
+
+          // Last resort: schedTo at 09:00 with full duration
+          if (!forcedDate) {
+            forcedDate  = meta.schedTo;
+            forcedFromM = 9 * 60;
+            forcedToM   = forcedFromM + neededMins;
+          }
+
+          // Push force-placed session into finalSessions
+          const forcedHours = r4((forcedToM - forcedFromM) / 60);
+          finalSessions.push({
+            assignmentId: meta.id,
+            title:        meta.title,
+            courseId:     meta.courseId || null,
+            date:         forcedDate,
+            from:         fromMins(forcedFromM),
+            to:           fromMins(forcedToM),
+            hours:        forcedHours,
+            completed:    false,
+            skipped:      false,
+            critical:     true,
+            forcePlaced:  true,
+          });
+
+          // Mark occupied so other tasks respect this slot
+          occupiedByDate[forcedDate] = [...(occupiedByDate[forcedDate] || []), [forcedFromM, forcedToM]];
+
+          // Add to unscheduled list with critical severity and actionable message
+          const forcedDateLabel = new Date(forcedDate + 'T00:00:00').toLocaleDateString('en-US', {
+            weekday: 'short', month: 'short', day: 'numeric',
+          });
+          unscheduled.push({
+            assignmentId: meta.id,
+            title:        meta.title,
+            severity:     'critical',
+            reason:       `⚠️ Placed on ${forcedDateLabel} — no availability blocks fall within its scheduling window (${meta.schedFrom} → ${meta.schedTo}). Please adjust your availability blocks and regenerate the plan.`,
+          });
+
+        } else {
+          // INSUFFICIENT TIME: blocks exist in window but not enough hours
+          const totalWindowMins = windowDates
+            .flatMap(d => availByDate[d] || [])
+            .reduce((s, b) => s + b.toMins - b.fromMins, 0);
+          const availableHours  = r4(totalWindowMins / 60);
+
+          unscheduled.push({
+            assignmentId: meta.id,
+            title:        meta.title,
+            severity:     'insufficient_time',
+            reason:       `Only ${availableHours}h of availability falls within the scheduling window but ${needed}h is needed. Add more time blocks and regenerate the plan.`,
+          });
+        }
+
       } else {
+        // Partially scheduled — warning
         const remaining = r4(needed - placedHours);
         warnings.push({
           assignmentId:   meta.id,
@@ -781,14 +878,10 @@ router.patch('/schedule/:sessionId', auth, async (req, res) => {
     await plan.save();
 
     // ── Sync assignment completed state ────────────────────────────────────────────────────
-    // When completed changes, check if ALL non-skipped sessions for this
-    // assignment (across all weeks) are done. If so, mark the assignment
-    // completed. If any session is un-completed, mark the assignment incomplete.
     if (completed !== undefined && session.assignmentId) {
       try {
         const assignmentId = session.assignmentId.toString();
 
-        // Gather all plans that contain sessions for this assignment
         const allPlans = await StudyPlan.find({
           userId:   req.userId,
           'sessions.assignmentId': session.assignmentId,
@@ -805,7 +898,6 @@ router.patch('/schedule/:sessionId', auth, async (req, res) => {
           { new: true },
         );
       } catch (syncErr) {
-        // Non-fatal: log but don't fail the request
         console.error('PATCH /planner/schedule sync assignment:', syncErr.message);
       }
     }
