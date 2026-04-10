@@ -4,7 +4,7 @@ import api from "../api";
 import logo from "../styles/logo2.png";
 import "../styles/app.css";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 type Course = {
   _id?: string;
@@ -22,7 +22,6 @@ type Course = {
 type Assignment = {
   _id?: string;
   id?: string;
-  // API populates courseId as a full object; accept both object and plain string
   courseId?: { _id?: string; id?: string } | string | null;
   completed?: boolean | null;
   isCompleted?: boolean | null;
@@ -40,7 +39,7 @@ type CourseForm = {
 
 type StoredUser = { id?: string; _id?: string; name?: string; email?: string };
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const PRESET_COLORS = [
   { hex: "#81A6C6", name: "Sky Blue"  },
@@ -57,12 +56,12 @@ const PRESET_COLORS = [
   { hex: "#8A7BA8", name: "Dusk"      },
 ];
 
-const PALETTE     = PRESET_COLORS.map(p => p.hex);
+const PALETTE       = PRESET_COLORS.map(p => p.hex);
 const DEFAULT_COLOR = "#81A6C6";
 
 const BLANK_FORM: CourseForm = { title: "", code: "", instructor: "", semester: "", color: PALETTE[0] };
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Helpers ───────────────────────────────────────────────────────────────────
 
 function getCourseId(c: Course): string { return c._id || c.id || ""; }
 function getCourseTitle(c: Course): string { return c.title || c.name || ""; }
@@ -75,26 +74,18 @@ function isCompleted(a: Assignment): boolean {
   return s === "completed" || s === "done";
 }
 
-/**
- * Safely extract the course ID from an assignment's courseId field.
- * The API populates courseId as a full object; this unwraps it to a plain string.
- */
 function getAssignmentCourseId(a: Assignment): string {
   if (!a.courseId) return "";
   if (typeof a.courseId === "string") return a.courseId;
   return a.courseId._id || a.courseId.id || "";
 }
 
-/**
- * Pick the first PALETTE color not already used by any course in `existing`.
- * Used only for the Add Course form default — the DB is the source of truth for saved colors.
- */
 function nextColor(existing: Course[]): string {
   const used = new Set(existing.map(c => (c.color || "").toLowerCase()));
   return PALETTE.find(p => !used.has(p.toLowerCase())) ?? PALETTE[existing.length % PALETTE.length];
 }
 
-// ─── Icons ──────────────────────────────────────────────────────────────────────
+// ─── Icons ────────────────────────────────────────────────────────────────────────
 
 function IconEdit()   { return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>; }
 function IconTrash()  { return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>; }
@@ -112,7 +103,7 @@ function IconBookOpen() {
   );
 }
 
-// ─── Color Picker ───────────────────────────────────────────────────────────────
+// ─── Color Picker ───────────────────────────────────────────────────────────────────
 
 function CourseColorPicker({ value, onChange }: { value: string; onChange: (hex: string) => void }) {
   return (
@@ -194,8 +185,6 @@ export default function Courses(): JSX.Element {
       api.get("/api/assignments", { headers }),
     ])
       .then(([cRes, aRes]) => {
-        // Use the DB color exactly as stored — the backend assigns unique colors on Canvas import.
-        // No client-side palette override.
         const raw: Course[] = Array.isArray(cRes.data) ? cRes.data
           : Array.isArray(cRes.data?.courses) ? cRes.data.courses : [];
         const aData = Array.isArray(aRes.data) ? aRes.data
@@ -315,6 +304,7 @@ export default function Courses(): JSX.Element {
           <div className="topbar-pill-nav">
             <Link to="/dashboard" className="topbar-pill">Dashboard</Link>
             <Link to="/courses"   className="topbar-pill topbar-pill-active">Courses</Link>
+            <Link to="/planner"   className="topbar-pill">Study Planner</Link>
             <Link to="/settings"  className="topbar-pill">Settings</Link>
           </div>
           <div className="topbar-right">
@@ -327,6 +317,7 @@ export default function Courses(): JSX.Element {
         <div ref={mobileMenuRef} className={`topbar-mobile-menu${mobileOpen ? " is-open" : ""}`}>
           <Link to="/dashboard" className="topbar-mobile-link" onClick={() => setMobileOpen(false)}>Dashboard</Link>
           <Link to="/courses"   className="topbar-mobile-link topbar-mobile-link-active" onClick={() => setMobileOpen(false)}>Courses</Link>
+          <Link to="/planner"   className="topbar-mobile-link" onClick={() => setMobileOpen(false)}>Study Planner</Link>
           <Link to="/settings"  className="topbar-mobile-link" onClick={() => setMobileOpen(false)}>Settings</Link>
           <div className="topbar-mobile-divider" />
           <button className="topbar-mobile-link topbar-mobile-link-danger" onClick={handleLogout}>Log out</button>
@@ -357,7 +348,6 @@ export default function Courses(): JSX.Element {
             </button>
           </div>
 
-          {/* Add panel */}
           <div className={`courses-add-panel${addOpen ? " is-open" : ""}`}>
             <form className="sett-expand-form" onSubmit={handleAdd}>
               <div className="course-form-grid">
@@ -402,7 +392,6 @@ export default function Courses(): JSX.Element {
             <div className="courses-grid">
               {courses.map(c => {
                 const id         = getCourseId(c);
-                // Use the color stored in the DB directly — no client-side override
                 const color      = c.color || DEFAULT_COLOR;
                 const stats      = courseStats(id);
                 const initials   = (getCourseTitle(c) || "?").slice(0, 2).toUpperCase();
@@ -425,9 +414,9 @@ export default function Courses(): JSX.Element {
                       </div>
 
                       <div className="course-card-chips">
-                        {c.semester && <span className="course-chip">📅 {c.semester}</span>}
-                        {c.canvasId && <span className="course-chip course-chip-canvas">Canvas</span>}
-                        {c.isHidden && <span className="course-chip course-chip-hidden">Hidden</span>}
+                        {c.semester  && <span className="course-chip">📅 {c.semester}</span>}
+                        {c.canvasId  && <span className="course-chip course-chip-canvas">Canvas</span>}
+                        {c.isHidden  && <span className="course-chip course-chip-hidden">Hidden</span>}
                       </div>
 
                       <div className="course-card-stats">

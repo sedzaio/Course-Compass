@@ -4,7 +4,7 @@ import api from "../api";
 import logo from "../styles/logo2.png";
 import "../styles/app.css";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 type Course = {
   _id: string;
@@ -27,28 +27,153 @@ type Assignment = {
   description?: string;
   type?: string;
   estimatedTime?: number;
+  aiGenerated?: boolean;
   canvasId?: string;
   canvasUrl?: string;
   source?: string;
 };
 
-type StoredUser  = { id?: string; _id?: string; name?: string; email?: string };
-type ViewMode    = "list" | "calendar";
-type WeekStart   = "sunday" | "monday";
+type StoredUser   = { id?: string; _id?: string; name?: string; email?: string };
+type ViewMode     = "list" | "calendar";
+type WeekStart    = "sunday" | "monday";
 type ActiveFilter = "overdue" | "thisweek" | "nextweek" | "pending" | "completed" | "all" | "nodate" | null;
 
-// ─── Default color fallback ───────────────────────────────────────────────────
-
+// ─── Default color ────────────────────────────────────────────────────────────────
 const DEFAULT_COLOR = "#81A6C6";
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Lucide-style SVG icons ───────────────────────────────────────────────────────
+
+function IconEdit() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+    </svg>
+  );
+}
+
+function IconTrash() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6M14 11v6" />
+      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+    </svg>
+  );
+}
+
+function IconCheck() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function IconRefresh({ spinning }: { spinning?: boolean }) {
+  return (
+    <svg
+      width="12" height="12" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
+      style={spinning ? { animation: "dash-spin 0.8s linear infinite" } : {}}
+    >
+      <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+      <path d="M3 21v-5h5" />
+    </svg>
+  );
+}
+
+function IconSparkle() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: "inline", verticalAlign: "middle" }}>
+      <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z" />
+      <path d="M20 3v4" />
+      <path d="M22 5h-4" />
+      <path d="M4 17v2" />
+      <path d="M5 18H3" />
+    </svg>
+  );
+}
+
+function IconExternalLink() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ display: "inline", verticalAlign: "middle", marginRight: 3 }}>
+      <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" />
+      <polyline points="15 3 21 3 21 9" />
+      <line x1="10" y1="14" x2="21" y2="3" />
+    </svg>
+  );
+}
+
+function IconList() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="8" y1="6" x2="21" y2="6" />
+      <line x1="8" y1="12" x2="21" y2="12" />
+      <line x1="8" y1="18" x2="21" y2="18" />
+      <line x1="3" y1="6" x2="3.01" y2="6" />
+      <line x1="3" y1="12" x2="3.01" y2="12" />
+      <line x1="3" y1="18" x2="3.01" y2="18" />
+    </svg>
+  );
+}
+
+function IconCalendar() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+      <line x1="16" y1="2" x2="16" y2="6" />
+      <line x1="8" y1="2" x2="8" y2="6" />
+      <line x1="3" y1="10" x2="21" y2="10" />
+    </svg>
+  );
+}
+
+function IconPlus() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  );
+}
+
+function IconSync() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M23 4v6h-6" />
+      <path d="M1 20v-6h6" />
+      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+    </svg>
+  );
+}
+
+function IconWand() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: "inline", verticalAlign: "middle" }}>
+      <path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.21 1.21 0 0 0 1.72 0L21.64 5.36a1.21 1.21 0 0 0 0-1.72Z" />
+      <path d="m14 7 3 3" />
+      <path d="M5 6v4" />
+      <path d="M19 14v4" />
+      <path d="M10 2v2" />
+      <path d="M7 8H3" />
+      <path d="M21 16h-4" />
+      <path d="M11 3H9" />
+    </svg>
+  );
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────────────
 
 function getToday(): Date {
-  const d = new Date(); d.setHours(0,0,0,0); return d;
+  const d = new Date(); d.setHours(0, 0, 0, 0); return d;
 }
 
 function startOfWeek(date: Date, weekStart: WeekStart): Date {
-  const d = new Date(date); d.setHours(0,0,0,0);
+  const d = new Date(date); d.setHours(0, 0, 0, 0);
   const day = d.getDay();
   const offset = weekStart === "monday" ? (day === 0 ? -6 : 1 - day) : -day;
   d.setDate(d.getDate() + offset);
@@ -56,7 +181,7 @@ function startOfWeek(date: Date, weekStart: WeekStart): Date {
 }
 
 function endOfWeek(start: Date): Date {
-  const d = new Date(start); d.setDate(d.getDate() + 6); d.setHours(23,59,59,999); return d;
+  const d = new Date(start); d.setDate(d.getDate() + 6); d.setHours(23, 59, 59, 999); return d;
 }
 
 function addDays(d: Date, n: number): Date {
@@ -87,10 +212,6 @@ function formatDue(dueDate: string): string {
   return `Due: ${isMidnight ? date : `${date} at ${time}`}`;
 }
 
-/**
- * Convert a UTC ISO string (from the DB) into a value suitable for
- * <input type="datetime-local"> — i.e. local time, no timezone suffix.
- */
 function utcToLocalInput(utcString?: string | null): string {
   if (!utcString) return "";
   const d = new Date(utcString);
@@ -103,18 +224,13 @@ function utcToLocalInput(utcString?: string | null): string {
   return `${year}-${month}-${day}T${hours}:${mins}`;
 }
 
-/**
- * Convert a datetime-local input value (local time, no timezone) to a
- * UTC ISO string for the API. Returns undefined if empty.
- */
 function localInputToUtc(value?: string): string | undefined {
   if (!value) return undefined;
-  const d = new Date(value); // browser treats no-tz string as local time
+  const d = new Date(value);
   if (isNaN(d.getTime())) return undefined;
   return d.toISOString();
 }
 
-/** Extract a short course code (max 7 chars). */
 function extractCourseCode(course?: Course | Assignment["courseId"]): string {
   if (!course) return "";
   if (course.code?.trim()) return course.code.trim().slice(0, 7);
@@ -161,6 +277,72 @@ function groupByDay(assignments: Assignment[]): { dateKey: string; label: string
   return groups;
 }
 
+// ─── Study Plan Widget ────────────────────────────────────────────────────────
+
+function toDateStr(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function StudyPlanWidget({ weekStart }: { weekStart: WeekStart }) {
+  const navigate = useNavigate();
+  const token = localStorage.getItem("token");
+  const [hasPlan, setHasPlan] = useState<boolean | null>(null); // null = loading
+
+  const today = useMemo(() => getToday(), []);
+  const wsDate = useMemo(() => startOfWeek(today, weekStart), [today, weekStart]);
+  const weekStartStr = useMemo(() => toDateStr(wsDate), [wsDate]);
+
+  useEffect(() => {
+    if (!token) return;
+    api
+      .get(`/api/planner/schedule?weekStart=${weekStartStr}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      .then((res) => {
+        const sessions = res.data?.sessions || [];
+        setHasPlan(sessions.length > 0);
+      })
+      .catch((err) => {
+        if (err?.response?.status === 404) setHasPlan(false);
+        else setHasPlan(false);
+      });
+  }, [token, weekStartStr]);
+
+  function handleClick() {
+    if (hasPlan) {
+      navigate("/planner");
+    } else {
+      navigate("/planner?autoGenerate=true");
+    }
+  }
+
+  return (
+    <div className="dash-study-widget">
+      <div className="dash-study-widget-top">
+        <span className="dash-study-widget-ai-badge">
+          <IconSparkle /> AI-powered
+        </span>
+        <p className="dash-study-widget-title">Study Plan</p>
+        <p className="dash-study-widget-sub">
+          {hasPlan === null
+            ? "Checking your plan…"
+            : hasPlan
+            ? "Your plan for this week is ready."
+            : "No plan yet for this week."}
+        </p>
+      </div>
+      <button
+        className="dash-study-widget-btn"
+        onClick={handleClick}
+        disabled={hasPlan === null}
+      >
+        <IconWand />
+        {hasPlan ? "View Plan" : "Generate Plan"}
+      </button>
+    </div>
+  );
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function Dashboard(): JSX.Element {
@@ -182,9 +364,9 @@ export default function Dashboard(): JSX.Element {
   const [expandedIds,    setExpandedIds]    = useState<Set<string>>(new Set());
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [syncBanner,     setSyncBanner]     = useState<string | null>(null);
-
-  // ── Active filter pill ──
   const [activeFilter,   setActiveFilter]   = useState<ActiveFilter>(null);
+
+  const [estimatingIds,  setEstimatingIds]  = useState<Set<string>>(new Set());
 
   const today            = useMemo(() => getToday(), []);
   const [weekAnchor,     setWeekAnchor]     = useState<Date>(() => getToday());
@@ -192,16 +374,16 @@ export default function Dashboard(): JSX.Element {
   const currentWeekEnd   = useMemo(() => endOfWeek(currentWeekStart), [currentWeekStart]);
   const isCurrentWeek    = useMemo(() => isSameWeek(today, currentWeekStart, currentWeekEnd), [today, currentWeekStart, currentWeekEnd]);
 
-  const nextWeekStart    = useMemo(() => addDays(startOfWeek(today, weekStart), 7), [today, weekStart]);
-  const nextWeekEnd      = useMemo(() => endOfWeek(nextWeekStart), [nextWeekStart]);
+  const nextWeekStart = useMemo(() => addDays(startOfWeek(today, weekStart), 7), [today, weekStart]);
+  const nextWeekEnd   = useMemo(() => endOfWeek(nextWeekStart), [nextWeekStart]);
 
-  const [calMonth,       setCalMonth]       = useState(() => new Date());
-  const [calSelected,    setCalSelected]    = useState<Date | null>(null);
+  const [calMonth,    setCalMonth]    = useState(() => new Date());
+  const [calSelected, setCalSelected] = useState<Date | null>(null);
 
-  const [showModal,      setShowModal]      = useState(false);
-  const [editingId,      setEditingId]      = useState<string | null>(null);
-  const [modalError,     setModalError]     = useState("");
-  const [modalSaving,    setModalSaving]    = useState(false);
+  const [showModal,   setShowModal]   = useState(false);
+  const [editingId,   setEditingId]   = useState<string | null>(null);
+  const [modalError,  setModalError]  = useState("");
+  const [modalSaving, setModalSaving] = useState(false);
 
   const [form, setForm] = useState({
     title: "", dueDate: "", courseId: "", description: "",
@@ -265,14 +447,54 @@ export default function Dashboard(): JSX.Element {
     return () => window.removeEventListener("keydown", handler);
   }, [showModal]);
 
-  // ── courseMap: _id → Course ──
+  useEffect(() => {
+    if (!token || loading || activeFilter !== null) return;
+
+    const toEstimate = assignments.filter(a =>
+      a.source === "canvas" &&
+      !a.estimatedTime &&
+      a.dueDate &&
+      isSameWeek(new Date(a.dueDate), currentWeekStart, currentWeekEnd)
+    );
+
+    if (toEstimate.length === 0) return;
+
+    const h = { Authorization: `Bearer ${token}` };
+
+    setEstimatingIds(prev => {
+      const n = new Set(prev);
+      toEstimate.forEach(a => n.add(a._id));
+      return n;
+    });
+
+    Promise.all(
+      toEstimate.map(a =>
+        api.post(`/api/assignments/${a._id}/estimate`, {}, { headers: h })
+          .then(res => ({ _id: a._id, estimatedTime: res.data.estimatedTime, aiGenerated: res.data.aiGenerated }))
+          .catch(() => null)
+      )
+    ).then(results => {
+      setAssignments(prev => prev.map(a => {
+        const hit = results.find(r => r && r._id === a._id);
+        if (!hit) return a;
+        return { ...a, estimatedTime: hit.estimatedTime, aiGenerated: hit.aiGenerated };
+      }));
+    }).finally(() => {
+      setEstimatingIds(prev => {
+        const n = new Set(prev);
+        toEstimate.forEach(a => n.delete(a._id));
+        return n;
+      });
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentWeekStart, currentWeekEnd, activeFilter, loading]);
+
   const courseMap = useMemo(() => {
     const map = new Map<string, Course>();
     courses.forEach(c => map.set(c._id, c));
     return map;
   }, [courses]);
 
-  // ── Hidden course IDs ──
   const hiddenCourseIds = useMemo(() => {
     const s = new Set<string>();
     courses.forEach(c => { if (c.isHidden) s.add(c._id); });
@@ -286,26 +508,17 @@ export default function Dashboard(): JSX.Element {
     }),
   [assignments, hiddenCourseIds]);
 
-  // ── Filtered assignments for list view based on activeFilter ──
   const filteredAssignments = useMemo(() => {
     const todayD = getToday();
     switch (activeFilter) {
-      case "overdue":
-        return visibleAssignments.filter(a => !a.completed && a.dueDate && new Date(a.dueDate) < todayD);
-      case "thisweek":
-        return visibleAssignments.filter(a => a.dueDate && isSameWeek(new Date(a.dueDate), currentWeekStart, currentWeekEnd));
-      case "nextweek":
-        return visibleAssignments.filter(a => a.dueDate && isSameWeek(new Date(a.dueDate), nextWeekStart, nextWeekEnd));
-      case "pending":
-        return visibleAssignments.filter(a => !a.completed);
-      case "completed":
-        return visibleAssignments.filter(a => a.completed);
-      case "all":
-        return visibleAssignments;
-      case "nodate":
-        return visibleAssignments.filter(a => !a.dueDate);
+      case "overdue":   return visibleAssignments.filter(a => !a.completed && a.dueDate && new Date(a.dueDate) < todayD);
+      case "thisweek":  return visibleAssignments.filter(a => a.dueDate && isSameWeek(new Date(a.dueDate), currentWeekStart, currentWeekEnd));
+      case "nextweek":  return visibleAssignments.filter(a => a.dueDate && isSameWeek(new Date(a.dueDate), nextWeekStart, nextWeekEnd));
+      case "pending":   return visibleAssignments.filter(a => !a.completed);
+      case "completed": return visibleAssignments.filter(a => a.completed);
+      case "all":       return visibleAssignments;
+      case "nodate":    return visibleAssignments.filter(a => !a.dueDate);
       default:
-        // no filter — show current week only (original behaviour)
         return visibleAssignments.filter(a => {
           if (!a.dueDate) return false;
           const due = new Date(a.dueDate);
@@ -314,7 +527,6 @@ export default function Dashboard(): JSX.Element {
     }
   }, [activeFilter, visibleAssignments, currentWeekStart, currentWeekEnd, nextWeekStart, nextWeekEnd]);
 
-  // ── Stats counts (always based on all visible assignments, not filtered) ──
   const counts = useMemo(() => ({
     overdue:  visibleAssignments.filter(a => !a.completed && a.dueDate && new Date(a.dueDate) < getToday()).length,
     thisWeek: visibleAssignments.filter(a => !a.completed && a.dueDate && isSameWeek(new Date(a.dueDate), currentWeekStart, currentWeekEnd)).length,
@@ -359,7 +571,9 @@ export default function Dashboard(): JSX.Element {
     return a.courseId?.color || DEFAULT_COLOR;
   }
 
-  function handleLogout() { localStorage.removeItem("token"); localStorage.removeItem("user"); navigate("/login"); }
+  function handleLogout() {
+    localStorage.removeItem("token"); localStorage.removeItem("user"); navigate("/login");
+  }
 
   function toggleExpand(id: string) {
     setExpandedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -381,8 +595,7 @@ export default function Dashboard(): JSX.Element {
 
   function openEditModal(a: Assignment) {
     setEditingId(a._id);
-    let estHrs = "";
-    let estMins = "0";
+    let estHrs = "", estMins = "0";
     if (a.estimatedTime && a.estimatedTime > 0) {
       const totalMin = Math.round(a.estimatedTime * 60);
       const h = Math.floor(totalMin / 60);
@@ -391,14 +604,12 @@ export default function Dashboard(): JSX.Element {
       estMins = [0, 15, 30, 45].includes(m) ? String(m) : "0";
     }
     setForm({
-      title: a.title || "",
-      // ✅ Convert UTC → local time for the datetime-local input
-      dueDate: utcToLocalInput(a.dueDate),
-      courseId: a.courseId?._id || "",
+      title:       a.title || "",
+      dueDate:     utcToLocalInput(a.dueDate),
+      courseId:    a.courseId?._id || "",
       description: a.description || "",
-      type: a.type || "assignment",
-      estHrs,
-      estMins,
+      type:        a.type || "assignment",
+      estHrs, estMins,
     });
     setModalError(""); setShowModal(true);
   }
@@ -423,12 +634,11 @@ export default function Dashboard(): JSX.Element {
     const h = { Authorization: `Bearer ${token}` };
     const estimatedTime = formToEstimatedTime(form.estHrs, form.estMins);
     const payload = {
-      title: form.title.trim(),
-      // ✅ Convert local datetime-local value → UTC ISO string before sending to API
-      dueDate: localInputToUtc(form.dueDate),
-      courseId: form.courseId || null,
-      description: form.description.trim() || undefined,
-      type: form.type,
+      title:         form.title.trim(),
+      dueDate:       localInputToUtc(form.dueDate),
+      courseId:      form.courseId || null,
+      description:   form.description.trim() || undefined,
+      type:          form.type,
       estimatedTime: estimatedTime !== undefined ? estimatedTime : null,
     };
     try {
@@ -453,17 +663,32 @@ export default function Dashboard(): JSX.Element {
     try { await api.delete(`/api/assignments/${id}`, { headers: { Authorization: `Bearer ${token}` } }); } catch {}
   }
 
-  // ── Filter pill click handler ──
-  function handleFilterClick(f: ActiveFilter) {
-    if (f === activeFilter) {
-      setActiveFilter(null);
-      setWeekAnchor(getToday());
-      return;
+  const handleReEstimate = useCallback(async (a: Assignment, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (estimatingIds.has(a._id)) return;
+    setEstimatingIds(prev => { const n = new Set(prev); n.add(a._id); return n; });
+    try {
+      const res = await api.post(
+        `/api/assignments/${a._id}/estimate`, {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setAssignments(prev => prev.map(x =>
+        x._id === a._id ? { ...x, estimatedTime: res.data.estimatedTime, aiGenerated: res.data.aiGenerated } : x
+      ));
+    } catch {}
+    finally {
+      setEstimatingIds(prev => { const n = new Set(prev); n.delete(a._id); return n; });
     }
+  }, [token, estimatingIds]);
+
+  function handleFilterClick(f: ActiveFilter) {
+    if (f === activeFilter) { setActiveFilter(null); setWeekAnchor(getToday()); return; }
     setActiveFilter(f);
     if (f === "thisweek") setWeekAnchor(getToday());
     if (f === "nextweek") setWeekAnchor(addDays(startOfWeek(getToday(), weekStart), 7));
   }
+
+  // ─── Render: Topbar ────────────────────────────────────────────────────────────────
 
   function renderTopbar() {
     return (
@@ -473,6 +698,7 @@ export default function Dashboard(): JSX.Element {
           <div className="topbar-pill-nav">
             <Link to="/dashboard" className="topbar-pill topbar-pill-active">Dashboard</Link>
             <Link to="/courses"   className="topbar-pill">Courses</Link>
+            <Link to="/planner"   className="topbar-pill">Study Planner</Link>
             <Link to="/settings"  className="topbar-pill">Settings</Link>
           </div>
           <div className="topbar-right">
@@ -485,6 +711,7 @@ export default function Dashboard(): JSX.Element {
         <div className={`topbar-mobile-menu${mobileMenuOpen ? " is-open" : ""}`} ref={mobileMenuRef}>
           <Link to="/dashboard" className="topbar-mobile-link topbar-mobile-link-active" onClick={() => setMobileMenuOpen(false)}>Dashboard</Link>
           <Link to="/courses"   className="topbar-mobile-link" onClick={() => setMobileMenuOpen(false)}>Courses</Link>
+          <Link to="/planner"   className="topbar-mobile-link" onClick={() => setMobileMenuOpen(false)}>Study Planner</Link>
           <Link to="/settings"  className="topbar-mobile-link" onClick={() => setMobileMenuOpen(false)}>Settings</Link>
           <div className="topbar-mobile-divider" />
           <button className="topbar-mobile-link topbar-mobile-link-danger" onClick={handleLogout}>Log out</button>
@@ -494,28 +721,35 @@ export default function Dashboard(): JSX.Element {
     );
   }
 
+  // ─── Render: Profile + Study Plan row ─────────────────────────────────────────────
+
   function renderProfileCard() {
     const hour = new Date().getHours();
     const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
     return (
-      <div className="dash-profile-card">
-        <div className="dash-profile-avatar">{avatarLetter}</div>
-        <div className="dash-profile-info">
-          <h2 className="dash-profile-name">{greeting}, {firstName}!</h2>
-          <p className="dash-profile-sub">Track your assignments and stay on top of your week.</p>
+      <div className="dash-profile-widget-row">
+        <div className="dash-profile-card">
+          <div className="dash-profile-avatar">{avatarLetter}</div>
+          <div className="dash-profile-info">
+            <h2 className="dash-profile-name">{greeting}, {firstName}!</h2>
+            <p className="dash-profile-sub">Track your assignments and stay on top of your week.</p>
+          </div>
         </div>
+        <StudyPlanWidget weekStart={weekStart} />
       </div>
     );
   }
 
+  // ─── Render: Filter pills ──────────────────────────────────────────────────────────────
+
   const FILTERS: { key: ActiveFilter; label: string; count: number; color: string }[] = [
-    { key: "overdue",   label: "Overdue",       count: counts.overdue,  color: "#c97b7b" },
-    { key: "thisweek",  label: "This week",      count: counts.thisWeek, color: "#81A6C6" },
-    { key: "nextweek",  label: "Next week",      count: counts.nextWeek, color: "#9B8EC4" },
-    { key: "pending",   label: "Pending",        count: counts.pending,  color: "#C9A050" },
-    { key: "completed", label: "Completed",      count: counts.done,     color: "#6da06a" },
-    { key: "nodate",    label: "No due date",    count: counts.nodate,   color: "#8BA8A0" },
-    { key: "all",       label: "All",            count: counts.all,      color: "#7A8FA6" },
+    { key: "overdue",   label: "Overdue",     count: counts.overdue,  color: "#c97b7b" },
+    { key: "thisweek",  label: "This week",    count: counts.thisWeek, color: "#81A6C6" },
+    { key: "nextweek",  label: "Next week",    count: counts.nextWeek, color: "#9B8EC4" },
+    { key: "pending",   label: "Pending",      count: counts.pending,  color: "#C9A050" },
+    { key: "completed", label: "Completed",    count: counts.done,     color: "#6da06a" },
+    { key: "nodate",    label: "No due date",  count: counts.nodate,   color: "#8BA8A0" },
+    { key: "all",       label: "All",          count: counts.all,      color: "#7A8FA6" },
   ];
 
   function renderStats() {
@@ -525,11 +759,7 @@ export default function Dashboard(): JSX.Element {
           <button
             key={f.key}
             className={`dash-stat-pill${activeFilter === f.key ? " dash-stat-pill-active" : ""}`}
-            style={{
-              borderColor: f.color,
-              color: f.color,
-              opacity: activeFilter && activeFilter !== f.key ? 0.5 : 1,
-            }}
+            style={{ borderColor: f.color, color: f.color, opacity: activeFilter && activeFilter !== f.key ? 0.5 : 1 }}
             onClick={() => handleFilterClick(f.key)}
           >
             <span className="dash-filter-count" style={{ color: f.color }}>{f.count}</span>
@@ -540,26 +770,29 @@ export default function Dashboard(): JSX.Element {
     );
   }
 
+  // ─── Render: Assignment row ──────────────────────────────────────────────────────────────
+
   function renderAssignmentRow(a: Assignment) {
-    const isExpanded  = expandedIds.has(a._id);
-    const courseColor = resolveColor(a);
-    const soon        = isDueSoon(a);
+    const isExpanded   = expandedIds.has(a._id);
+    const isEstimating = estimatingIds.has(a._id);
+    const courseColor  = resolveColor(a);
+    const soon         = isDueSoon(a);
 
-    const mergedCourse = a.courseId
-      ? (courseMap.get(a.courseId._id) ?? a.courseId)
-      : undefined;
-
+    const mergedCourse = a.courseId ? (courseMap.get(a.courseId._id) ?? a.courseId) : undefined;
     const code =
       extractCourseCode(mergedCourse) ||
       extractCourseCode(a.courseId) ||
       extractCourseName(mergedCourse).slice(0, 7);
 
-    const canvasLink  = a.canvasUrl || null;
-    const hasDetails  = !!(a.description || a.courseId?.instructor || a.courseId?.semester || a.dueDate || a.type);
+    const canvasLink = a.canvasUrl || null;
+    const hasDetails = !!(a.description || a.courseId?.instructor || a.courseId?.semester || a.dueDate || a.type);
+    const isCanvas   = a.source === "canvas";
 
-    const estDisplay  = a.estimatedTime && a.estimatedTime > 0
-      ? fmtEstimated(a.estimatedTime)
-      : null;
+    const estDisplay = isEstimating
+      ? "…"
+      : a.estimatedTime && a.estimatedTime > 0
+        ? fmtEstimated(a.estimatedTime)
+        : null;
 
     return (
       <div
@@ -575,11 +808,7 @@ export default function Dashboard(): JSX.Element {
             onClick={e => { e.stopPropagation(); toggleComplete(a); }}
             aria-label={a.completed ? "Mark incomplete" : "Mark complete"}
           >
-            {a.completed && (
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            )}
+            {a.completed && <IconCheck />}
           </button>
 
           <div className="dash-item-body">
@@ -595,14 +824,37 @@ export default function Dashboard(): JSX.Element {
                   {code}
                 </span>
               )}
+
               {a.dueDate && (
                 <span className={`dash-tag dash-tag-due${soon ? " dash-tag-due-soon" : ""}`}>
                   {formatDue(a.dueDate)}
                 </span>
               )}
-              {estDisplay && (
-                <span className="dash-tag dash-tag-est">~{estDisplay}</span>
+
+              {(estDisplay || isCanvas) && (
+                <span
+                  className={`dash-tag dash-tag-est${isEstimating ? " dash-tag-est-loading" : ""}`}
+                  title={a.aiGenerated ? "AI-estimated time" : "Estimated time"}
+                >
+                  {a.aiGenerated && !isEstimating && (
+                    <span style={{ marginRight: 3, opacity: 0.8 }}><IconSparkle /></span>
+                  )}
+                  {estDisplay ? `~${estDisplay}` : ""}
+
+                  {isCanvas && (
+                    <button
+                      className="dash-est-refresh"
+                      title="Re-estimate with AI"
+                      onClick={e => handleReEstimate(a, e)}
+                      disabled={isEstimating}
+                      aria-label="Re-estimate"
+                    >
+                      <IconRefresh spinning={isEstimating} />
+                    </button>
+                  )}
+                </span>
               )}
+
               {canvasLink && (
                 <a
                   href={canvasLink}
@@ -612,32 +864,15 @@ export default function Dashboard(): JSX.Element {
                   title="Open in Canvas"
                   onClick={e => e.stopPropagation()}
                 >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ display: "inline", verticalAlign: "middle", marginRight: 3 }}>
-                    <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
-                    <polyline points="15 3 21 3 21 9"/>
-                    <line x1="10" y1="14" x2="21" y2="3"/>
-                  </svg>
-                  Canvas
+                  <IconExternalLink /> Canvas
                 </a>
               )}
             </div>
           </div>
 
-          <div
-            className="dash-item-actions"
-            style={{ padding: "0 4px" }}
-            onClick={e => e.stopPropagation()}
-          >
-            <button className="dash-edit-btn" onClick={() => openEditModal(a)} aria-label="Edit">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M9.5 2.5l2 2L4 12H2v-2L9.5 2.5z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </button>
-            <button className="dash-delete-btn" onClick={() => handleDelete(a._id)} aria-label="Delete">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M2 3.5h10M5 3.5V2.5h4v1M5.5 6v4M8.5 6v4M3 3.5l.7 8h6.6l.7-8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </button>
+          <div className="dash-item-actions" style={{ padding: "0 4px" }} onClick={e => e.stopPropagation()}>
+            <button className="dash-edit-btn" onClick={() => openEditModal(a)} aria-label="Edit"><IconEdit /></button>
+            <button className="dash-delete-btn" onClick={() => handleDelete(a._id)} aria-label="Delete"><IconTrash /></button>
           </div>
         </div>
 
@@ -664,10 +899,13 @@ export default function Dashboard(): JSX.Element {
                     <span>{new Date(a.dueDate).toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
                   </div>
                 )}
-                {estDisplay && (
+                {a.estimatedTime && a.estimatedTime > 0 && (
                   <div className="dash-item-expand-row">
                     <span className="dash-item-expand-label">Estimated</span>
-                    <span>{estDisplay}</span>
+                    <span>
+                      {fmtEstimated(a.estimatedTime)}
+                      {a.aiGenerated && <span style={{ marginLeft: 5, opacity: 0.6, fontSize: 11 }}><IconSparkle /> AI</span>}
+                    </span>
                   </div>
                 )}
                 {a.type && (
@@ -684,10 +922,12 @@ export default function Dashboard(): JSX.Element {
     );
   }
 
+  // ─── Render: List view ────────────────────────────────────────────────────────────────
+
   function renderListView() {
     if (loading) return <div className="dash-loading">Loading assignments…</div>;
 
-    const isWeekNav   = activeFilter === "thisweek" || activeFilter === "nextweek" || activeFilter === null;
+    const isWeekNav = activeFilter === "thisweek" || activeFilter === "nextweek" || activeFilter === null;
     const filterLabel = (() => {
       if (activeFilter === null)        return formatWeekRangeShort(currentWeekStart, currentWeekEnd);
       if (activeFilter === "thisweek")  return formatWeekRangeShort(currentWeekStart, currentWeekEnd);
@@ -710,9 +950,7 @@ export default function Dashboard(): JSX.Element {
           ) : (
             <span style={{ width: 32 }} />
           )}
-
           <span className="dash-week-nav-label">{filterLabel}</span>
-
           {isWeekNav ? (
             <>
               {activeFilter === null && !isCurrentWeek && (
@@ -729,8 +967,8 @@ export default function Dashboard(): JSX.Element {
           <div className="dash-empty">
             <div className="dash-empty-icon">
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M9 11l3 3L22 4" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M9 11l3 3L22 4" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </div>
             <h3>{
@@ -766,24 +1004,26 @@ export default function Dashboard(): JSX.Element {
     );
   }
 
+  // ─── Render: Calendar view ────────────────────────────────────────────────────────────
+
   function renderCalendarView() {
     const dayNames = weekStart === "monday"
-      ? ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
-      : ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+      ? ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+      : ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const todayStr = getToday().toDateString();
     return (
       <div className="dash-calendar">
         <div className="dash-cal-nav">
-          <button className="dash-cal-nav-btn" onClick={() => setCalMonth(m => new Date(m.getFullYear(), m.getMonth()-1, 1))}>‹</button>
+          <button className="dash-cal-nav-btn" onClick={() => setCalMonth(m => new Date(m.getFullYear(), m.getMonth() - 1, 1))}>‹</button>
           <span className="dash-cal-month-label">{calMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</span>
-          <button className="dash-cal-nav-btn" onClick={() => setCalMonth(m => new Date(m.getFullYear(), m.getMonth()+1, 1))}>›</button>
+          <button className="dash-cal-nav-btn" onClick={() => setCalMonth(m => new Date(m.getFullYear(), m.getMonth() + 1, 1))}>›</button>
         </div>
         <div className="dash-cal-grid">
           {dayNames.map(d => <div key={d} className="dash-cal-day-name">{d}</div>)}
           {calDays.map((day, i) => {
             if (!day) return <div key={`e-${i}`} className="dash-cal-cell dash-cal-cell-empty" />;
-            const key = day.toDateString();
-            const items = assignmentsByDay[key] || [];
+            const key      = day.toDateString();
+            const items    = assignmentsByDay[key] || [];
             const isToday    = key === todayStr;
             const isSelected = calSelected?.toDateString() === key;
             const hasOverdue = items.some(a => !a.completed && a.dueDate && new Date(a.dueDate) < getToday());
@@ -795,7 +1035,7 @@ export default function Dashboard(): JSX.Element {
                 <span className="dash-cal-cell-num">{day.getDate()}</span>
                 {items.length > 0 && (
                   <div className="dash-cal-dots">
-                    {items.slice(0,4).map((a, idx) => (
+                    {items.slice(0, 4).map((a, idx) => (
                       <span key={idx} className="dash-cal-dot" style={{ background: resolveColor(a) }} />
                     ))}
                   </div>
@@ -822,6 +1062,8 @@ export default function Dashboard(): JSX.Element {
     );
   }
 
+  // ─── Render: Modal ─────────────────────────────────────────────────────────────────
+
   function renderModal() {
     if (!showModal) return null;
     return (
@@ -839,7 +1081,6 @@ export default function Dashboard(): JSX.Element {
               <label className="dash-form-label">Title *</label>
               <input className="dash-form-input" value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="e.g. Chapter 5 Reading" required />
             </div>
-
             <div className="dash-form-row">
               <div className="dash-form-field">
                 <label className="dash-form-label">Due Date &amp; Time</label>
@@ -847,24 +1088,9 @@ export default function Dashboard(): JSX.Element {
               </div>
               <div className="dash-form-field">
                 <label className="dash-form-label">Estimated Time</label>
-                <div style={{ display: "flex", flexDirection: "row", gap: 6, alignItems: "center" }}>
-                  <input
-                    type="number"
-                    min="0"
-                    max="99"
-                    step="1"
-                    className="dash-form-input"
-                    style={{ flex: 1, minWidth: 0 }}
-                    value={form.estHrs}
-                    onChange={e => setForm(f => ({ ...f, estHrs: e.target.value }))}
-                    placeholder="hr"
-                  />
-                  <select
-                    className="dash-form-input"
-                    style={{ flex: 1, minWidth: 0 }}
-                    value={form.estMins}
-                    onChange={e => setForm(f => ({ ...f, estMins: e.target.value }))}
-                  >
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input type="number" min="0" max="99" step="1" className="dash-form-input" style={{ flex: 1, minWidth: 0 }} value={form.estHrs} onChange={e => setForm(f => ({ ...f, estHrs: e.target.value }))} placeholder="hr" />
+                  <select className="dash-form-input" style={{ flex: 1, minWidth: 0 }} value={form.estMins} onChange={e => setForm(f => ({ ...f, estMins: e.target.value }))}>
                     <option value="0">0 min</option>
                     <option value="15">15 min</option>
                     <option value="30">30 min</option>
@@ -873,7 +1099,6 @@ export default function Dashboard(): JSX.Element {
                 </div>
               </div>
             </div>
-
             <div className="dash-form-row">
               <div className="dash-form-field">
                 <label className="dash-form-label">Course</label>
@@ -894,7 +1119,6 @@ export default function Dashboard(): JSX.Element {
                 </select>
               </div>
             </div>
-
             <div className="dash-form-field dash-form-field-full">
               <label className="dash-form-label">Notes</label>
               <textarea className="dash-form-input dash-form-textarea" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Optional notes…" rows={3} />
@@ -912,15 +1136,14 @@ export default function Dashboard(): JSX.Element {
     );
   }
 
+  // ─── Root render ────────────────────────────────────────────────────────────────
+
   return (
     <div className="auth-shell-soft">
       {renderTopbar()}
       {syncBanner && (
         <div className="dash-sync-banner">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
-            <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
-          </svg>
+          <IconSync />
           {syncBanner}
         </div>
       )}
@@ -936,17 +1159,14 @@ export default function Dashboard(): JSX.Element {
             <div className="dash-section-actions">
               <div className="dash-view-toggle">
                 <button className={`dash-view-btn${viewMode === "list" ? " is-active" : ""}`} onClick={() => setViewMode("list")} aria-label="List view">
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
-                  List
+                  <IconList /> List
                 </button>
                 <button className={`dash-view-btn${viewMode === "calendar" ? " is-active" : ""}`} onClick={() => setViewMode("calendar")} aria-label="Calendar view">
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.5"/><path d="M5 2v2M11 2v2M2 7h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-                  Calendar
+                  <IconCalendar /> Calendar
                 </button>
               </div>
               <button className="dash-add-btn" onClick={openAddModal}>
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
-                Add
+                <IconPlus /> Add
               </button>
             </div>
           </div>

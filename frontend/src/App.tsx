@@ -6,6 +6,7 @@ import ResetPassword from "./pages/ResetPassword";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
 import Courses from "./pages/Courses";
+import StudyPlanner from "./pages/StudyPlanner";
 
 function App(): JSX.Element {
   return (
@@ -19,6 +20,7 @@ function App(): JSX.Element {
         <Route path="/dashboard"       element={<Dashboard />} />
         <Route path="/courses"         element={<Courses />} />
         <Route path="/settings"        element={<Settings />} />
+        <Route path="/planner"         element={<StudyPlanner />} />
       </Routes>
     </BrowserRouter>
   );
