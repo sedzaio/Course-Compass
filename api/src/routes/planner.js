@@ -1,4 +1,6 @@
 // api/src/routes/planner.js
+'use strict';
+
 const express    = require('express');
 const router     = express.Router();
 const axios      = require('axios');
@@ -7,7 +9,9 @@ const User       = require('../models/User');
 const Assignment = require('../models/Assignment');
 const StudyPlan  = require('../models/StudyPlan');
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
+// ─── Pure helpers ─────────────────────────────────────────────────────────────
+
+const DAY_NAMES = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
 
 function toDateStr(date) {
   return date.toISOString().slice(0, 10);
@@ -16,23 +20,37 @@ function toDateStr(date) {
 function getWeekStart(date, firstDay = 'sunday') {
   const d = new Date(date);
   const day = d.getUTCDay();
-  const diff = firstDay === 'monday'
-    ? (day === 0 ? -6 : 1 - day)
-    : -day;
+  const diff = firstDay === 'monday' ? (day === 0 ? -6 : 1 - day) : -day;
   d.setUTCDate(d.getUTCDate() + diff);
   d.setUTCHours(0, 0, 0, 0);
   return d;
 }
 
+/** Returns { earliest: Date, latest: Date } or null if window is invalid. */
 function getSchedulingWindow(dueDate, advanceDays, bufferHours) {
   const due      = new Date(dueDate);
-  const earliest = new Date(due.getTime() - advanceDays * 24 * 60 * 60 * 1000);
-  const latest   = new Date(due.getTime() - bufferHours * 60 * 60 * 1000);
+  const earliest = new Date(due.getTime() - advanceDays * 86400000);
+  const latest   = new Date(due.getTime() - bufferHours * 3600000);
   if (earliest >= latest) return null;
   return { earliest, latest };
 }
 
+/** Convert "HH:mm" to total minutes. */
+function toMins(hhmm) {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + m;
+}
+
+/** Convert total minutes to "HH:mm". */
+function fromMins(mins) {
+  return `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+}
+
+/** Round to nearest 0.25. */
+function r4(n) { return Math.round(n * 4) / 4; }
+
 // ─── GET /planner/preferences ─────────────────────────────────────────────────
+
 router.get('/preferences', auth, async (req, res) => {
   try {
     const user = await User.findById(req.userId).select('studyPlanner preferences');
@@ -42,12 +60,13 @@ router.get('/preferences', auth, async (req, res) => {
       firstDayOfWeek: user.preferences?.firstDayOfWeek || 'sunday',
     });
   } catch (err) {
-    console.error('GET /planner/preferences error:', err);
+    console.error('GET /planner/preferences:', err);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
 // ─── PUT /planner/preferences ─────────────────────────────────────────────────
+
 router.put('/preferences', auth, async (req, res) => {
   try {
     const { availability, bufferHours, advanceDays, maxSessionHours, breakMinutes } = req.body;
@@ -55,80 +74,79 @@ router.put('/preferences', auth, async (req, res) => {
     if (bufferHours !== undefined) {
       const b = Number(bufferHours);
       if (!Number.isInteger(b) || b < 1)
-        return res.status(400).json({ message: '"Finish at least" must be a whole number greater than 0.' });
+        return res.status(400).json({ message: '"Finish at least" must be a whole number ≥ 1.' });
     }
 
     if (advanceDays !== undefined) {
       const a = Number(advanceDays);
       if (!Number.isInteger(a) || a < 1)
-        return res.status(400).json({ message: '"Start scheduling up to" must be a whole number greater than 0.' });
+        return res.status(400).json({ message: '"Start scheduling up to" must be a whole number ≥ 1.' });
       if (a > 90)
         return res.status(400).json({ message: '"Start scheduling up to" cannot exceed 90 days.' });
       const currentBuf = bufferHours !== undefined
         ? Number(bufferHours)
         : ((await User.findById(req.userId).select('studyPlanner'))?.studyPlanner?.bufferHours ?? 24);
-      if (a * 24 <= currentBuf) {
+      if (a * 24 <= currentBuf)
         return res.status(400).json({
-          message: `"Start scheduling up to" (${a} days = ${a * 24}h) must be strictly greater than "Finish at least" (${currentBuf}h).`,
+          message: `"Start scheduling up to" (${a}d = ${a * 24}h) must exceed "Finish at least" (${currentBuf}h).`,
         });
-      }
     }
 
     if (maxSessionHours !== undefined && maxSessionHours !== null) {
       const m = Number(maxSessionHours);
-      if (isNaN(m) || m < 1 || m > 23)
-        return res.status(400).json({ message: 'Max session must be between 1 and 23 hours.' });
+      if (isNaN(m) || m < 0.5 || m > 23)
+        return res.status(400).json({ message: 'Max session must be between 0.5 and 23 hours.' });
     }
 
     if (breakMinutes !== undefined) {
-      const allowed = [0, 15, 30, 45, 60];
-      if (!allowed.includes(Number(breakMinutes)))
+      if (![0, 15, 30, 45, 60].includes(Number(breakMinutes)))
         return res.status(400).json({ message: 'Break minutes must be 0, 15, 30, 45, or 60.' });
     }
 
     if (availability !== undefined) {
-      const days = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
       for (const block of availability) {
-        if (!days.includes(block.day))
+        if (!DAY_NAMES.includes(block.day))
           return res.status(400).json({ message: `Invalid day: ${block.day}` });
         if (!block.from || !block.to)
-          return res.status(400).json({ message: 'Each availability block must have from and to times.' });
+          return res.status(400).json({ message: 'Each availability block must have from and to.' });
         if (block.from >= block.to)
-          return res.status(400).json({ message: `${block.day}: start time must be before end time.` });
+          return res.status(400).json({ message: `${block.day}: start must be before end.` });
       }
     }
 
     const setFields = {}, unsetFields = {};
-    if (availability   !== undefined) setFields['studyPlanner.availability']  = availability;
-    if (bufferHours    !== undefined) setFields['studyPlanner.bufferHours']   = Number(bufferHours);
-    if (advanceDays    !== undefined) setFields['studyPlanner.advanceDays']   = Number(advanceDays);
-    if (breakMinutes   !== undefined) setFields['studyPlanner.breakMinutes']  = Number(breakMinutes);
+    if (availability    !== undefined) setFields['studyPlanner.availability']    = availability;
+    if (bufferHours     !== undefined) setFields['studyPlanner.bufferHours']     = Number(bufferHours);
+    if (advanceDays     !== undefined) setFields['studyPlanner.advanceDays']     = Number(advanceDays);
+    if (breakMinutes    !== undefined) setFields['studyPlanner.breakMinutes']    = Number(breakMinutes);
     if (maxSessionHours !== undefined) {
       if (maxSessionHours === null) unsetFields['studyPlanner.maxSessionHours'] = '';
-      else setFields['studyPlanner.maxSessionHours'] = Number(maxSessionHours);
+      else                          setFields['studyPlanner.maxSessionHours']   = Number(maxSessionHours);
     }
 
     if (!Object.keys(setFields).length && !Object.keys(unsetFields).length) {
-      const current = await User.findById(req.userId).select('studyPlanner');
-      return res.json({ studyPlanner: current?.studyPlanner || {} });
+      const u = await User.findById(req.userId).select('studyPlanner');
+      return res.json({ studyPlanner: u?.studyPlanner || {} });
     }
 
-    const mongoOp = {};
-    if (Object.keys(setFields).length)   mongoOp.$set   = setFields;
-    if (Object.keys(unsetFields).length) mongoOp.$unset = unsetFields;
+    const op = {};
+    if (Object.keys(setFields).length)   op.$set   = setFields;
+    if (Object.keys(unsetFields).length) op.$unset = unsetFields;
 
-    const user = await User.findByIdAndUpdate(req.userId, mongoOp, { new: true }).select('studyPlanner');
+    const user = await User.findByIdAndUpdate(req.userId, op, { new: true }).select('studyPlanner');
     if (!user) return res.status(404).json({ message: 'User not found.' });
     res.json({ studyPlanner: user.studyPlanner });
   } catch (err) {
-    console.error('PUT /planner/preferences error:', err);
+    console.error('PUT /planner/preferences:', err);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
 // ─── POST /planner/generate ────────────────────────────────────────────────────
+
 router.post('/generate', auth, async (req, res) => {
   try {
+    // ── 1. Load user settings ─────────────────────────────────────────────────
     const user = await User.findById(req.userId).select('studyPlanner preferences');
     if (!user) return res.status(404).json({ message: 'User not found' });
 
@@ -136,20 +154,18 @@ router.post('/generate', auth, async (req, res) => {
     const bufferHours  = planner.bufferHours    ?? 24;
     const advanceDays  = planner.advanceDays     ?? 7;
     const breakMins    = planner.breakMinutes    ?? 15;
-    const maxSessHours = planner.maxSessionHours ?? null;
+    const maxSessHours = planner.maxSessionHours ?? null;   // null = unlimited
     const availability = planner.availability   || [];
     const firstDay     = user.preferences?.firstDayOfWeek || 'sunday';
 
-    if (!availability.length) {
-      return res.status(400).json({ message: 'No availability set. Please configure your study planner settings.' });
-    }
+    if (!availability.length)
+      return res.status(400).json({ message: 'No availability set. Configure your study planner settings.' });
 
-    // ── Resolve the target week ───────────────────────────────────────────────
+    // ── 2. Resolve target week ─────────────────────────────────────────────────
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
     const todayStr = toDateStr(today);
 
-    // Use the weekStart sent by the frontend; fall back to the current week.
     const weekStart = req.body.weekStart
       ? (() => { const d = new Date(req.body.weekStart + 'T00:00:00.000Z'); d.setUTCHours(0,0,0,0); return d; })()
       : getWeekStart(today, firstDay);
@@ -158,33 +174,32 @@ router.post('/generate', auth, async (req, res) => {
     const weekEnd      = new Date(weekStart);
     weekEnd.setUTCDate(weekEnd.getUTCDate() + 6);
     weekEnd.setUTCHours(23, 59, 59, 999);
-    const weekEndStr   = toDateStr(weekEnd);
+    const weekEndStr = toDateStr(weekEnd);
 
-    // For the current week: schedule from today. For future weeks: schedule from weekStart.
-    const scheduleFromDate = weekStart > today ? weekStart : today;
-    const scheduleFromStr  = toDateStr(scheduleFromDate);
+    // Sessions can start on today at the earliest (for current week) or weekStart (for future weeks)
+    const scheduleFrom    = weekStart > today ? weekStart : today;
+    const scheduleFromStr = toDateStr(scheduleFrom);
 
-    // ── Fetch incomplete assignments ─────────────────────────────────────────
+    // ── 3. Fetch incomplete assignments ───────────────────────────────────────
     const allAssignments = await Assignment.find({
-      userId:    req.userId,
-      completed: false,
-      dueDate:   { $ne: null },
+      userId: req.userId, completed: false, dueDate: { $ne: null },
     }).sort({ dueDate: 1 });
 
-    // ── Filter: window must overlap this week ────────────────────────────────
-    const eligible       = [];
+    // ── 4. Separate overdue (for current-week unscheduled notice) vs eligible ─
     const preUnscheduled = [];
+    const eligible       = [];
+
+    const currentWeekStartStr = toDateStr(getWeekStart(today, firstDay));
 
     for (const a of allAssignments) {
       const win = getSchedulingWindow(a.dueDate, advanceDays, bufferHours);
       if (!win) continue;
 
-      // Overdue tasks — only show in unscheduled for the CURRENT week
       if (win.latest < today) {
-        const currentWeekStart = getWeekStart(today, firstDay);
-        if (weekStartStr === toDateStr(currentWeekStart)) {
+        // Only surface overdue items on the current week's plan
+        if (weekStartStr === currentWeekStartStr) {
           preUnscheduled.push({
-            assignmentId: a._id.toString(),
+            assignmentId: a._id,
             title:        a.title,
             reason:       `Deadline has passed — latest scheduling time was ${toDateStr(win.latest)}.`,
           });
@@ -192,44 +207,46 @@ router.post('/generate', auth, async (req, res) => {
         continue;
       }
 
-      if (win.earliest > weekEnd)  continue;
-      if (win.latest   < weekStart) continue;
+      // Window must overlap the target week
+      if (win.earliest > weekEnd || win.latest < weekStart) continue;
 
-      eligible.push({ assignment: a, window: win });
+      eligible.push({ a, win });
     }
 
-    if (eligible.length === 0) {
+    if (!eligible.length)
       return res.json({ sessions: [], warnings: [], unscheduled: preUnscheduled, weekStart: weekStartStr });
-    }
 
-    // ── Already-scheduled hours from ALL weeks before this one ───────────────
+    // ── 5. Sum already-completed or non-skipped hours from prior weeks ─────────
+    //       Bug fix: skipped sessions don't count as "done"
     const previousPlans = await StudyPlan.find({
-      userId:    req.userId,
-      weekStart: { $lt: weekStartStr },
+      userId: req.userId, weekStart: { $lt: weekStartStr },
     });
 
-    const scheduledHoursMap = {};
+    const doneHoursMap = {}; // assignmentId → hours already completed/scheduled
     for (const plan of previousPlans) {
       for (const s of (plan.sessions || [])) {
-        if (!s.assignmentId) continue;
+        if (!s.assignmentId || s.skipped) continue; // skipped sessions don't count
         const id = s.assignmentId.toString();
-        scheduledHoursMap[id] = (scheduledHoursMap[id] || 0) + (s.hours || 0);
+        doneHoursMap[id] = (doneHoursMap[id] || 0) + (s.hours || 0);
       }
     }
 
-    // ── AI fallback: estimate Canvas tasks ───────────────────────────────────
-    for (const { assignment: a } of eligible) {
+    // ── 6. Auto-estimate Canvas tasks with no estimatedTime ──────────────────
+    for (const { a } of eligible) {
       if (a.estimatedTime == null && a.source === 'canvas') {
         try {
-          const prompt = `Reply with ONLY a single decimal number representing study hours needed for: ${a.title || 'Untitled'}`;
-          const groqRes = await axios.post(
+          const gr = await axios.post(
             'https://api.groq.com/openai/v1/chat/completions',
-            { model: 'llama-3.1-8b-instant', messages: [{ role: 'user', content: prompt }], max_tokens: 10, temperature: 0.1 },
+            {
+              model: 'llama-3.1-8b-instant',
+              messages: [{ role: 'user', content: `Reply with only a single number: estimated study hours for this assignment title: "${a.title || 'assignment'}"` }],
+              max_tokens: 8, temperature: 0.1,
+            },
             { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' } }
           );
-          const parsed = parseFloat(groqRes.data.choices[0].message.content.trim());
-          if (!isNaN(parsed) && parsed > 0) {
-            a.estimatedTime = Math.round(Math.min(Math.max(parsed, 0.25), 24) * 4) / 4;
+          const est = parseFloat(gr.data.choices[0].message.content.trim());
+          if (!isNaN(est) && est > 0) {
+            a.estimatedTime = r4(Math.min(Math.max(est, 0.25), 24));
             a.aiGenerated = true;
             await a.save();
           }
@@ -238,411 +255,263 @@ router.post('/generate', auth, async (req, res) => {
       if (a.estimatedTime == null) a.estimatedTime = 1;
     }
 
-    // ── Build assignment list ─────────────────────────────────────────────────
-    const assignmentList = [];
-    const preWarnings    = [];
+    // ── 7. Build the lean assignment list for the AI ───────────────────────────
+    //    We only send: id, remainingHours, scheduleFrom, scheduleTo, dueDate
+    //    The AI does NOT need titles, courseIds, or anything else.
+    const assignmentMeta = {}; // id → full meta (for post-processing, never sent to AI)
+    const aiAssignments  = [];
 
-    for (const { assignment: a, window: win } of eligible) {
-      const alreadyScheduled = scheduledHoursMap[a._id.toString()] || 0;
-      const totalHours       = a.estimatedTime || 1;
-      const remainingHours   = Math.round(Math.max(totalHours - alreadyScheduled, 0) * 4) / 4;
+    for (const { a, win } of eligible) {
+      const done      = doneHoursMap[a._id.toString()] || 0;
+      const total     = a.estimatedTime || 1;
+      const remaining = r4(Math.max(total - done, 0));
 
-      if (alreadyScheduled > totalHours) {
-        preWarnings.push({
-          assignmentId:   a._id.toString(),
-          title:          a.title,
-          scheduledHours: alreadyScheduled,
-          neededHours:    totalHours,
-          message:        `Over-scheduled by ${Math.round((alreadyScheduled - totalHours) * 4) / 4}h in previous weeks.`,
-        });
-        continue;
-      }
+      if (remaining <= 0) continue; // fully done in prior weeks
 
-      if (remainingHours === 0) continue;
-
-      // Clamp the window to this week's valid scheduling range
+      // Clamp the window to this week and scheduleFrom
       const clampedEarliest = new Date(Math.max(win.earliest.getTime(), weekStart.getTime()));
       const clampedLatest   = new Date(Math.min(win.latest.getTime(),   weekEnd.getTime()));
-      const effectiveFrom   = new Date(Math.max(clampedEarliest.getTime(), scheduleFromDate.getTime()));
+      const effectiveFrom   = new Date(Math.max(clampedEarliest.getTime(), scheduleFrom.getTime()));
 
-      if (effectiveFrom > clampedLatest) continue;
+      if (effectiveFrom > clampedLatest) continue; // window doesn't reach this week
 
-      assignmentList.push({
-        id:                    a._id.toString(),
-        title:                 a.title,
-        courseId:              a.courseId ? a.courseId.toString() : null,
-        dueDate:               toDateStr(new Date(a.dueDate)),
-        totalHours,
-        alreadyScheduledHours: alreadyScheduled,
-        remainingHours,
-        scheduleFrom:          toDateStr(effectiveFrom),
-        scheduleTo:            toDateStr(clampedLatest),
-        scheduleLatestTime:    win.latest.toISOString(),
+      const id          = a._id.toString();
+      const schedFromStr = toDateStr(effectiveFrom);
+      // scheduleTo = the date the latest session must END on (or before)
+      const schedToStr   = toDateStr(clampedLatest);
+      // latestEndMins = the latest minute-of-day the last session can end (on scheduleTo)
+      // We compute this from win.latest time-of-day, treating it as HH:mm UTC (same as availability)
+      const latestEndMins = clampedLatest.getUTCHours() * 60 + clampedLatest.getUTCMinutes();
+
+      assignmentMeta[id] = {
+        id,
+        title:      a.title,
+        courseId:   a.courseId ? a.courseId.toString() : null,
+        remaining,
+        schedFrom:  schedFromStr,
+        schedTo:    schedToStr,
+        latestEndMins, // minute-of-day ceiling on schedTo day
+      };
+
+      aiAssignments.push({
+        id,
+        hours:     remaining,
+        from:      schedFromStr,
+        to:        schedToStr,
+        due:       toDateStr(new Date(a.dueDate)),
       });
     }
 
-    if (assignmentList.length === 0) {
-      return res.json({ sessions: [], warnings: preWarnings, unscheduled: preUnscheduled, weekStart: weekStartStr });
-    }
+    if (!aiAssignments.length)
+      return res.json({ sessions: [], warnings: [], unscheduled: preUnscheduled, weekStart: weekStartStr });
 
-    // ── Compute exact free slots per day for AI ───────────────────────────────
-    const DAY_NAMES = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-
-    const freeSlotsPerDay = {};
+    // ── 8. Build per-date availability blocks (what the AI sees as "free time") ─
+    //    Key: "YYYY-MM-DD", Value: array of { from: "HH:mm", to: "HH:mm" }
+    const dailySlots = {};
     for (let i = 0; i <= 6; i++) {
-      const dayDate = new Date(weekStart);
-      dayDate.setUTCDate(weekStart.getUTCDate() + i);
-      const dateStr = toDateStr(dayDate);
+      const d = new Date(weekStart);
+      d.setUTCDate(weekStart.getUTCDate() + i);
+      const dateStr = toDateStr(d);
       if (dateStr < scheduleFromStr) continue;
-      const dayName = DAY_NAMES[dayDate.getUTCDay()];
+      const dayName = DAY_NAMES[d.getUTCDay()];
       const blocks  = availability.filter(b => b.day === dayName);
-      if (!blocks.length) continue;
-      const slots = [];
-      let totalMins = 0;
-      for (const b of blocks) {
-        const [fh, fm] = b.from.split(':').map(Number);
-        const [th, tm] = b.to.split(':').map(Number);
-        const mins = (th * 60 + tm) - (fh * 60 + fm);
-        if (mins > 0) {
-          slots.push({ from: b.from, to: b.to, availableMinutes: mins });
-          totalMins += mins;
-        }
-      }
-      if (totalMins > 0) freeSlotsPerDay[dateStr] = { slots, totalAvailableMinutes: totalMins };
+      if (blocks.length) dailySlots[dateStr] = blocks.map(b => ({ from: b.from, to: b.to }));
     }
 
-    // ── AI payload ────────────────────────────────────────────────────────────
-    const payload = {
-      weekStart:        weekStartStr,
-      weekEnd:          weekEndStr,
-      todayDate:        todayStr,
-      scheduleFromDate: scheduleFromStr,
-      availability,
-      freeSlotsPerDay,
-      preferences: {
-        maxSessionHours: maxSessHours || 'Unlimited',
-        breakMinutes:    breakMins,
-      },
-      assignments: assignmentList,
-    };
+    // ── 9. Build system prompt (lean) ─────────────────────────────────────────
+    const systemPrompt = `You are a scheduling assistant. Output ONLY valid JSON, no markdown.
 
-    const systemPrompt = `You are an expert academic scheduling AI. Generate a study plan for exactly ONE week.
-Output ONLY valid JSON — no markdown, no explanation, no extra keys.
+You will receive:
+- "slots": available time per date { "YYYY-MM-DD": [{ from, to }] }
+- "prefs": { breakMins, maxSessionHours }
+- "tasks": array of { id, hours, from, to, due }
+  - "hours": exact hours that MUST be scheduled this week
+  - "from"/"to": date range the task must be scheduled within (inclusive)
+  - "due": due date (schedule earlier-due tasks first)
 
-=== STRICT RULES ===
+RULES:
+1. Schedule ONLY within the given slots. A session must fit ENTIRELY inside ONE slot.
+2. Schedule sessions ONLY on dates within the task's from–to range.
+3. Leave exactly breakMins between consecutive sessions on the same date.
+4. If hours > maxSessionHours, split into multiple sessions each ≤ maxSessionHours.
+5. Sessions must not overlap on the same date.
+6. Sort tasks by due date — schedule earlier-due tasks first.
+7. Do NOT output anything about a task that got fully scheduled in "partial"/"unscheduled".
 
-1. AVAILABILITY ONLY: Schedule sessions ONLY within the "availability" blocks (day + from/to in 24h).
-   A session from HH:mm to HH:mm must fit ENTIRELY within a single availability block.
-   Example: block is 08:00–12:00. A 2h session starting 11:00 ends 13:00 — INVALID. Start at 10:00 instead.
-
-2. FUTURE DATES ONLY: Never schedule a session on a date before "scheduleFromDate".
-
-3. SCHEDULING WINDOW:
-   Each assignment has "scheduleFrom" and "scheduleTo".
-   "scheduleLatestTime" is the exact ISO cutoff — the session must END before this.
-   → No session may start before scheduleFrom.
-   → No session may start OR end after scheduleTo.
-
-4. EXACT HOURS (CRITICAL):
-   Each assignment has "remainingHours". The sum of "hours" across ALL sessions for that
-   assignment must equal EXACTLY remainingHours. Never more, never less.
-   NEVER produce a session with hours < 0.25 (15 minutes minimum).
-
-5. SPLITTING: If remainingHours > maxSessionHours, split across multiple sessions.
-   Name them "Title (Part 1)", "Title (Part 2)", etc. Each part ≤ maxSessionHours.
-
-6. NO TIME OVERLAP: Two sessions on the same date must never overlap in time.
-   After placing a session, the next session on the same date must start at least breakMinutes later.
-
-7. BREAKS: Leave exactly breakMinutes gap between consecutive sessions in the same block.
-
-8. PRIORITY: Schedule earliest-dueDate assignments first. Use ALL available time greedily.
-
-9. NO PHANTOM ENTRIES: Only include sessions/warnings/unscheduled for assignmentIds
-    that appear EXACTLY in the provided "assignments" array.
-
-10. WARNINGS vs UNSCHEDULED:
-    - "warnings": assignment was partially scheduled (some hours placed but < remainingHours)
-    - "unscheduled": assignment could not be scheduled AT ALL (0 hours placed)
-    - NEVER put the same assignment in both warnings AND unscheduled.
-    - NEVER add a warning if the assignment is fully scheduled (scheduledHours === remainingHours).
-
-=== OUTPUT SCHEMA ===
+OUTPUT SCHEMA (no other fields):
 {
-  "sessions": [
-    { "assignmentId": "<exact id>", "title": "string", "courseId": "string|null",
-      "date": "YYYY-MM-DD", "from": "HH:mm", "to": "HH:mm", "hours": 1.5 }
-  ],
-  "warnings": [
-    { "assignmentId": "<exact id>", "title": "string",
-      "scheduledHours": 1.0, "neededHours": 2.5, "message": "string" }
-  ],
-  "unscheduled": [
-    { "assignmentId": "<exact id>", "title": "string", "reason": "string" }
-  ]
+  "sessions": [{ "id": "<task id>", "date": "YYYY-MM-DD", "from": "HH:mm", "to": "HH:mm" }],
+  "partial":  [{ "id": "<task id>", "scheduledMins": 90 }],
+  "unscheduled": ["<task id>"]
 }`;
 
-    // ── Call Groq ─────────────────────────────────────────────────────────────
+    const aiPayload = {
+      slots: dailySlots,
+      prefs: {
+        breakMins,
+        maxSessionHours: maxSessHours || 'unlimited',
+      },
+      tasks: aiAssignments,
+    };
+
+    // ── 10. Call Groq ──────────────────────────────────────────────────────────
     const groqRes = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
       {
         model:           'llama-3.3-70b-versatile',
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user',   content: JSON.stringify(payload) },
+          { role: 'user',   content: JSON.stringify(aiPayload) },
         ],
         response_format: { type: 'json_object' },
-        temperature:     0.2,
+        temperature:     0.1,
       },
       { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' } }
     );
 
-    const plan = JSON.parse(groqRes.data.choices[0].message.content);
+    const aiPlan = JSON.parse(groqRes.data.choices[0].message.content);
 
-    // ── Post-processing ───────────────────────────────────────────────────────
-    const validAssignmentIds = new Set(assignmentList.map(a => a.id));
-
-    const windowMap = {};
-    for (const a of assignmentList) {
-      windowMap[a.id] = {
-        from:       a.scheduleFrom,
-        scheduleTo: a.scheduleTo,
-        latest:     new Date(a.scheduleLatestTime),
-      };
+    // ── 11. Build per-date availability map for validation ────────────────────
+    const availByDate = {}; // dateStr → [{ fromMins, toMins }]
+    for (const [dateStr, blocks] of Object.entries(dailySlots)) {
+      availByDate[dateStr] = blocks.map(b => ({ fromMins: toMins(b.from), toMins: toMins(b.to) }));
     }
 
-    const availBlocksByDay = {};
-    for (let i = 0; i <= 6; i++) {
-      const dayDate = new Date(weekStart);
-      dayDate.setUTCDate(weekStart.getUTCDate() + i);
-      const dateStr = toDateStr(dayDate);
-      const dayName = DAY_NAMES[dayDate.getUTCDay()];
-      const blocks  = availability.filter(b => b.day === dayName);
-      if (!blocks.length) continue;
-      availBlocksByDay[dateStr] = blocks.map(b => {
-        const [fh, fm] = b.from.split(':').map(Number);
-        const [th, tm] = b.to.split(':').map(Number);
-        return { fromMins: fh * 60 + fm, toMins: th * 60 + tm };
+    const validIds = new Set(Object.keys(assignmentMeta));
+
+    // ── 12. Validate + normalize AI sessions ─────────────────────────────────
+    //    - Ignore unknown ids
+    //    - Compute hours from from/to (never trust the AI's hours field)
+    //    - Drop if outside availability block
+    //    - Drop if outside assignment window
+    //    - Drop if < 15 minutes
+    //    - Track capped hours per assignment to not exceed remaining
+    const candidateSessions = []; // { id, date, from, to, hours }
+
+    for (const s of (aiPlan.sessions || [])) {
+      const id = s.id;
+      if (!id || !validIds.has(id)) continue;
+
+      const meta = assignmentMeta[id];
+      if (!meta) continue;
+
+      const date = s.date;
+      if (!date || date < meta.schedFrom || date > meta.schedTo) continue;
+      if (date < scheduleFromStr) continue;
+
+      const from = s.from;
+      const to   = s.to;
+      if (!from || !to) continue;
+
+      const fromM = toMins(from);
+      const toM   = toMins(to);
+      if (toM <= fromM) continue; // invalid time range
+
+      // Compute hours from from/to — never trust AI's reported hours
+      const sessionMins  = toM - fromM;
+      const sessionHours = r4(sessionMins / 60);
+      if (sessionHours < 0.25) continue; // < 15 min sessions dropped
+
+      // Must fit entirely inside an availability block on that date
+      const blocks = availByDate[date] || [];
+      if (!blocks.some(b => fromM >= b.fromMins && toM <= b.toMins)) continue;
+
+      // On the scheduleTo date, the session must end before latestEndMins
+      if (date === meta.schedTo && meta.latestEndMins > 0 && toM > meta.latestEndMins) continue;
+
+      candidateSessions.push({ id, date, from, to, hours: sessionHours });
+    }
+
+    // Sort by date then from-time
+    candidateSessions.sort((a, b) =>
+      a.date !== b.date ? a.date.localeCompare(b.date) : a.from.localeCompare(b.from)
+    );
+
+    // ── 13. Final pass: enforce no-overlap + cap at remainingHours ─────────────
+    const scheduledMinsById = {}; // id → minutes already placed
+    const occupiedByDate    = {}; // dateStr → [[fromMins, toMins]]
+    const finalSessions     = [];
+
+    for (const s of candidateSessions) {
+      const meta = assignmentMeta[s.id];
+      const remainingMins = Math.round(meta.remaining * 60) - (scheduledMinsById[s.id] || 0);
+
+      if (remainingMins <= 0) continue; // already filled
+
+      const fromM    = toMins(s.from);
+      let   toM      = toMins(s.to);
+      let   sessMins = toM - fromM;
+
+      // Cap to remaining
+      if (sessMins > remainingMins) {
+        sessMins = remainingMins;
+        toM      = fromM + sessMins;
+      }
+
+      // Must still be >= 15 min after capping
+      if (sessMins < 15) continue;
+
+      const occupied = occupiedByDate[s.date] || [];
+      if (occupied.some(([oF, oT]) => fromM < oT && toM > oF)) continue; // overlap
+
+      // Commit
+      occupiedByDate[s.date] = [...occupied, [fromM, toM]];
+      scheduledMinsById[s.id] = (scheduledMinsById[s.id] || 0) + sessMins;
+
+      finalSessions.push({
+        assignmentId: meta.id,
+        title:        meta.title,
+        courseId:     meta.courseId || null,
+        date:         s.date,
+        from:         s.from,
+        to:           fromMins(toM),
+        hours:        r4(sessMins / 60),
+        completed:    false,
+        skipped:      false,
       });
     }
 
-    const validSessions            = [];
-    const droppedHoursByAssignment = {};
+    // ── 14. Build warnings and unscheduled deterministically ──────────────────
+    //    We never trust the AI's partial/unscheduled — we compute it ourselves.
+    const warnings    = [...preWarnings];  // preWarnings from step 4 (none yet, reserved)
+    const unscheduled = [...preUnscheduled];
 
-    for (const s of (plan.sessions || [])) {
-      if (!validAssignmentIds.has(s.assignmentId)) continue;
+    for (const meta of Object.values(assignmentMeta)) {
+      const scheduledMins  = scheduledMinsById[meta.id] || 0;
+      const scheduledHours = r4(scheduledMins / 60);
+      const needed         = meta.remaining;
 
-      if (s.date < scheduleFromStr) {
-        droppedHoursByAssignment[s.assignmentId] = (droppedHoursByAssignment[s.assignmentId] || 0) + (s.hours || 0);
-        continue;
-      }
+      if (scheduledHours >= needed) continue; // fully scheduled — no warning
 
-      const w = windowMap[s.assignmentId];
-      if (w) {
-        if (s.date < w.from || s.date > w.scheduleTo) {
-          droppedHoursByAssignment[s.assignmentId] = (droppedHoursByAssignment[s.assignmentId] || 0) + (s.hours || 0);
-          continue;
-        }
-        const sessionEnd = new Date(`${s.date}T${s.to}:00.000Z`);
-        if (sessionEnd > w.latest) {
-          droppedHoursByAssignment[s.assignmentId] = (droppedHoursByAssignment[s.assignmentId] || 0) + (s.hours || 0);
-          continue;
-        }
-      }
-
-      const blocks = availBlocksByDay[s.date] || [];
-      const [sfh, sfm] = s.from.split(':').map(Number);
-      const [sth, stm] = s.to.split(':').map(Number);
-      const sessionFromMins = sfh * 60 + sfm;
-      const sessionToMins   = sth * 60 + stm;
-      const fitsInBlock = blocks.some(b =>
-        sessionFromMins >= b.fromMins && sessionToMins <= b.toMins
-      );
-      
-      if (!fitsInBlock) {
-        droppedHoursByAssignment[s.assignmentId] = (droppedHoursByAssignment[s.assignmentId] || 0) + (s.hours || 0);
-        continue;
-      }
-
-      if ((s.hours || 0) < 0.25) continue;
-
-      validSessions.push({ ...s, completed: false, skipped: false });
-    }
-
-    validSessions.sort((a, b) => {
-      if (a.date !== b.date) return a.date.localeCompare(b.date);
-      return a.from.localeCompare(b.from);
-    });
-
-    const hoursScheduledByAssignment = {};
-    const finalSessions = [];
-    const occupiedByDate = {};
-
-    for (const s of validSessions) {
-      const a = assignmentList.find(x => x.id === s.assignmentId);
-
-      const already    = hoursScheduledByAssignment[s.assignmentId] || 0;
-      const targetHours = a ? a.remainingHours : null;
-      if (targetHours !== null) {
-        const remaining = Math.round((targetHours - already) * 4) / 4;
-        if (remaining <= 0) continue;
-
-        let sessionHours = s.hours;
-        let sessionTo    = s.to;
-
-        if (sessionHours > remaining) {
-          const [fh, fm]     = s.from.split(':').map(Number);
-          const clampedMins  = Math.round(remaining * 60);
-          const endTotalMins = fh * 60 + fm + clampedMins;
-          sessionTo    = `${String(Math.floor(endTotalMins / 60)).padStart(2,'0')}:${String(endTotalMins % 60).padStart(2,'0')}`;
-          sessionHours = remaining;
-        }
-
-        if (sessionHours < 0.25) continue;
-
-        const [sfh2, sfm2] = s.from.split(':').map(Number);
-        const [sth2, stm2] = sessionTo.split(':').map(Number);
-        const fromMinsVal  = sfh2 * 60 + sfm2;
-        const toMinsVal    = sth2 * 60 + stm2;
-
-        const occupied = occupiedByDate[s.date] || [];
-        const overlaps = occupied.some(([oFrom, oTo]) =>
-          fromMinsVal < oTo && toMinsVal > oFrom
-        );
-        if (overlaps) {
-          droppedHoursByAssignment[s.assignmentId] = (droppedHoursByAssignment[s.assignmentId] || 0) + sessionHours;
-          continue;
-        }
-
-        occupiedByDate[s.date] = [...occupied, [fromMinsVal, toMinsVal]];
-        hoursScheduledByAssignment[s.assignmentId] = Math.round((already + sessionHours) * 4) / 4;
-        finalSessions.push({ ...s, to: sessionTo, hours: sessionHours });
+      if (scheduledHours === 0) {
+        // Nothing placed at all
+        unscheduled.push({
+          assignmentId: meta.id,
+          title:        meta.title,
+          reason:       'No available time slots.',
+        });
       } else {
-        const [sfh2, sfm2] = s.from.split(':').map(Number);
-        const [sth2, stm2] = s.to.split(':').map(Number);
-        const fromMinsVal  = sfh2 * 60 + sfm2;
-        const toMinsVal    = sth2 * 60 + stm2;
-        const occupied = occupiedByDate[s.date] || [];
-        const overlaps = occupied.some(([oFrom, oTo]) =>
-          fromMinsVal < oTo && toMinsVal > oFrom
-        );
-        if (overlaps) continue;
-        occupiedByDate[s.date] = [...occupied, [fromMinsVal, toMinsVal]];
-        finalSessions.push(s);
-      }
-    }
-
-    // ── Deep Cleaning for AI Output ─────────────────────────────────────────────
-    let aiWarnings = (plan.warnings || []).filter(w => validAssignmentIds.has(w.assignmentId));
-    let aiUnscheduled = (plan.unscheduled || []).filter(u => validAssignmentIds.has(u.assignmentId));
-
-    // 1. Sync AI's warnings with our actual scheduled totals (since we dropped/clamped some)
-    aiWarnings = aiWarnings.map(w => {
-      const a = assignmentList.find(x => x.id === w.assignmentId);
-      if (!a) return w;
-      return {
-        ...w,
-        scheduledHours: hoursScheduledByAssignment[w.assignmentId] || 0,
-        neededHours: a.remainingHours
-      };
-    });
-
-    // 2. Add warnings for dropped hours
-    for (const [assignmentId, droppedHours] of Object.entries(droppedHoursByAssignment)) {
-      const a = assignmentList.find(x => x.id === assignmentId);
-      if (!a) continue;
-      const scheduled = hoursScheduledByAssignment[assignmentId] || 0;
-
-      // If we managed to fully schedule it anyway, no warning needed
-      if (scheduled >= a.remainingHours) continue;
-
-      const existing = aiWarnings.find(w => w.assignmentId === assignmentId);
-      if (existing) {
-        // If AI hallucinated a message like "Fully scheduled", overwrite it
-        if (existing.message.toLowerCase().includes("fully scheduled")) {
-          existing.message = `${droppedHours}h removed — outside valid window or availability block.`;
-        } else {
-          existing.message += ` (${droppedHours}h removed — outside valid window or availability block)`;
-        }
-      } else {
-        aiWarnings.push({
-          assignmentId,
-          title:          a.title,
-          scheduledHours: scheduled,
-          neededHours:    a.remainingHours,
-          message:        `${droppedHours}h removed — sessions were outside valid window or availability block.`,
+        // Partially placed
+        warnings.push({
+          assignmentId:   meta.id,
+          title:          meta.title,
+          scheduledHours,
+          neededHours:    needed,
+          message:        `Only ${scheduledHours}h of ${needed}h could be scheduled this week.`,
         });
       }
     }
 
-    // 3. Demote 0-hour warnings into `unscheduled`
-    for (let i = aiWarnings.length - 1; i >= 0; i--) {
-      const w = aiWarnings[i];
-      if (w.scheduledHours === 0) {
-        const inUnscheduled = aiUnscheduled.some(u => u.assignmentId === w.assignmentId);
-        if (!inUnscheduled) {
-          aiUnscheduled.push({
-            assignmentId: w.assignmentId,
-            title: w.title,
-            reason: w.message || "Not enough time available"
-          });
-        }
-        aiWarnings.splice(i, 1);
-      }
-    }
-
-    // 4. Erase warnings for anything that actually got fully scheduled
-    aiWarnings = aiWarnings.filter(w => w.scheduledHours < w.neededHours);
-
-    // 5. Catch partially scheduled items that missed getting a warning
-    for (const a of assignmentList) {
-      const scheduled = hoursScheduledByAssignment[a.id] || 0;
-      if (scheduled > 0 && scheduled < a.remainingHours) {
-        const alreadyWarned = aiWarnings.some(w => w.assignmentId === a.id);
-        if (!alreadyWarned) {
-          aiWarnings.push({
-            assignmentId:   a.id,
-            title:          a.title,
-            scheduledHours: scheduled,
-            neededHours:    a.remainingHours,
-            message:        `Only ${scheduled}h of ${a.remainingHours}h could be scheduled this week.`,
-          });
-        }
-      }
-    }
-
-    // 6. Clean unscheduled list
-    aiUnscheduled = aiUnscheduled.filter(u => {
-      const a = assignmentList.find(x => x.id === u.assignmentId);
-      if (!a) return true;
-      const scheduled = hoursScheduledByAssignment[u.assignmentId] || 0;
-      
-      // If it got ANY hours, it's not unscheduled (it's partially scheduled and in warnings)
-      if (scheduled > 0) return false; 
-
-      const w = windowMap[u.assignmentId];
-      // If the assignment's scheduling window extends into future weeks, defer it silently 
-      // (Don't flag as unscheduled this week, let it naturally flow to next week)
-      if (w && w.scheduleTo <= weekEndStr) {
-        return true; // The window ENDS this week, so it's genuinely missed. Keep it.
-      }
-      return false; // Defer to future week. Drop it.
-    });
-
-    res.json({
-      sessions:    finalSessions,
-      warnings:    [...preWarnings, ...aiWarnings],
-      unscheduled: [...preUnscheduled, ...aiUnscheduled],
-      weekStart:   weekStartStr,
-    });
+    res.json({ sessions: finalSessions, warnings, unscheduled, weekStart: weekStartStr });
 
   } catch (err) {
-    console.error('POST /planner/generate error:', err.response?.data || err.message);
-    res.status(500).json({ message: 'Failed to generate AI study plan', error: err.message });
+    console.error('POST /planner/generate:', err.response?.data || err.message);
+    res.status(500).json({ message: 'Failed to generate study plan', error: err.message });
   }
 });
 
 // ─── POST /planner/schedule — save plan ───────────────────────────────────────
+
 router.post('/schedule', auth, async (req, res) => {
   try {
     const { weekStart, sessions, warnings, unscheduled } = req.body;
@@ -650,25 +519,19 @@ router.post('/schedule', auth, async (req, res) => {
 
     const plan = await StudyPlan.findOneAndUpdate(
       { userId: req.userId, weekStart },
-      {
-        userId:      req.userId,
-        weekStart,
-        sessions,
-        warnings:    warnings    || [],
-        unscheduled: unscheduled || [],
-        generatedAt: new Date(),
-      },
+      { userId: req.userId, weekStart, sessions, warnings: warnings || [], unscheduled: unscheduled || [], generatedAt: new Date() },
       { upsert: true, new: true }
     );
 
     res.json(plan);
   } catch (err) {
-    console.error('POST /planner/schedule error:', err);
+    console.error('POST /planner/schedule:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
 
 // ─── GET /planner/schedule — load saved plan ──────────────────────────────────
+
 router.get('/schedule', auth, async (req, res) => {
   try {
     const { weekStart } = req.query;
@@ -679,15 +542,16 @@ router.get('/schedule', auth, async (req, res) => {
 
     res.json(plan);
   } catch (err) {
-    console.error('GET /planner/schedule error:', err);
+    console.error('GET /planner/schedule:', err);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
 // ─── PATCH /planner/schedule/:sessionId — mark done / skip ───────────────────
+
 router.patch('/schedule/:sessionId', auth, async (req, res) => {
   try {
-    const { sessionId } = req.params;
+    const { sessionId }         = req.params;
     const { completed, skipped } = req.body;
 
     const plan = await StudyPlan.findOne({ userId: req.userId, 'sessions._id': sessionId });
@@ -700,7 +564,7 @@ router.patch('/schedule/:sessionId', auth, async (req, res) => {
 
     res.json({ sessionId, completed: session.completed, skipped: session.skipped });
   } catch (err) {
-    console.error('PATCH /planner/schedule error:', err);
+    console.error('PATCH /planner/schedule:', err);
     res.status(500).json({ message: 'Server error' });
   }
 });
