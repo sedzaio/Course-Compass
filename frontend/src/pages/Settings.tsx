@@ -10,7 +10,7 @@ type StoredUser = {
   id?: string; _id?: string; name?: string; email?: string;
 };
 
-type AccountPanel = "name" | "email" | "password" | "firstday" | "planner" | "canvas" | "closeaccount" | null;
+type AccountPanel = "name" | "email" | "password" | "firstday" | "canvas" | "closeaccount" | null;
 
 const DOW_OPTIONS = [
   { val: "sunday", label: "Sunday" },
@@ -32,32 +32,6 @@ function IconCalendar() { return <svg width="16" height="16" viewBox="0 0 24 24"
 function IconCanvas()   { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg>; }
 function IconChevron()  { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>; }
 function IconDanger()   { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>; }
-function IconPlanner()  { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>; }
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function isInteger(val: number): boolean {
-  return Number.isFinite(val) && Math.floor(val) === val;
-}
-
-function validatePlannerFields(
-  advanceDays: number,
-  bufferHours: number
-): string | null {
-  if (!isInteger(advanceDays)) return "\"Start scheduling up to\" must be a whole number (no decimals).";
-  if (advanceDays < 2)         return "\"Start scheduling up to\" must be at least 2 days.";
-  if (advanceDays > 365)       return "\"Start scheduling up to\" cannot exceed 365 days.";
-  if (!isInteger(bufferHours)) return "\"Finish at least\" must be a whole number (no decimals).";
-  if (bufferHours < 1)         return "\"Finish at least\" must be at least 1 hour.";
-  if (bufferHours > 24)        return "\"Finish at least\" cannot exceed 24 hours.";
-  // cross-field: window must be >= 24 h
-  const windowHours = advanceDays * 24 - bufferHours;
-  if (windowHours < 24) {
-    const minAdvance = Math.ceil((bufferHours + 24) / 24);
-    return `Scheduling window must be at least 24 hours. With a buffer of ${bufferHours}h, "Start scheduling up to" must be at least ${minAdvance} days.`;
-  }
-  return null;
-}
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
@@ -115,7 +89,6 @@ export default function Settings(): JSX.Element {
     setCanvasError(""); setCloseError(""); setClosePassword("");
     setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
     setCodeSent(false); setCodeValue("");
-    setPlannerError("");
   }
 
   // ────────────────────────────────────────────────────────────
@@ -231,11 +204,6 @@ export default function Settings(): JSX.Element {
           setFirstDay(pref);
           localStorage.setItem("firstDayOfWeek", pref);
         }
-        // load planner prefs
-        const ad = res.data?.advanceDays ?? res.data?.preferences?.advanceDays;
-        const bh = res.data?.bufferHours ?? res.data?.preferences?.bufferHours;
-        if (typeof ad === "number") setPlannerAdvance(ad);
-        if (typeof bh === "number") setPlannerBuffer(bh);
       })
       .catch(() => {});
   }, [token]);
@@ -256,51 +224,6 @@ export default function Settings(): JSX.Element {
   }
 
   // ────────────────────────────────────────────────────────────
-  // PREFERENCES — Study Planner
-  // ────────────────────────────────────────────────────────────
-
-  const [plannerAdvance, setPlannerAdvance] = useState<number>(7);   // advanceDays default
-  const [plannerBuffer,  setPlannerBuffer]  = useState<number>(24);  // bufferHours default
-  const [plannerSaving,  setPlannerSaving]  = useState(false);
-  const [plannerError,   setPlannerError]   = useState("");
-
-  function handleAdvanceChange(raw: string) {
-    // strip decimals on input — only allow digits
-    const cleaned = raw.replace(/[^0-9]/g, "");
-    const n = cleaned === "" ? 0 : parseInt(cleaned, 10);
-    setPlannerAdvance(n);
-    setPlannerError("");
-  }
-
-  function handleBufferChange(raw: string) {
-    const cleaned = raw.replace(/[^0-9]/g, "");
-    const n = cleaned === "" ? 0 : parseInt(cleaned, 10);
-    setPlannerBuffer(n);
-    setPlannerError("");
-  }
-
-  async function handlePlannerSave(e: React.FormEvent) {
-    e.preventDefault();
-    const validationError = validatePlannerFields(plannerAdvance, plannerBuffer);
-    if (validationError) { setPlannerError(validationError); return; }
-    setPlannerSaving(true); setPlannerError("");
-    try {
-      await api.put("/api/auth/preferences", {
-        advanceDays: plannerAdvance,
-        bufferHours: plannerBuffer,
-      }, { headers: { Authorization: `Bearer ${token}` } });
-      setOpenPanel(null);
-      showSuccess("Study planner preferences saved.");
-    } catch (err: any) {
-      setPlannerError(err?.response?.data?.message || "Failed to save planner preferences.");
-    } finally { setPlannerSaving(false); }
-  }
-
-  function plannerRowValue(): string {
-    return `Schedule up to ${plannerAdvance}d ahead · Finish ${plannerBuffer}h before due`;
-  }
-
-  // ────────────────────────────────────────────────────────────
   // CANVAS
   // ────────────────────────────────────────────────────────────
 
@@ -315,6 +238,7 @@ export default function Settings(): JSX.Element {
   const [syncFrequency,   setSyncFrequency]   = useState<string>("weekly");
   const [freqSaving,      setFreqSaving]      = useState(false);
   const [syncResult,      setSyncResult]      = useState<{ ok: boolean; message: string } | null>(null);
+  // Track whether this is the very first time saving Canvas credentials
   const [wasConnected,    setWasConnected]    = useState(false);
 
   useEffect(() => {
@@ -326,7 +250,7 @@ export default function Settings(): JSX.Element {
         setCanvasUrl(res.data?.canvasUrl     || "");
         const connected = !!res.data?.isConnected;
         setCanvasSaved(connected);
-        setWasConnected(connected);
+        setWasConnected(connected);  // remember existing state before any edits
         setLastSync(res.data?.lastSync       || null);
         setNextSync(res.data?.nextSync       || null);
         setSyncFrequency(res.data?.syncFrequency || "weekly");
@@ -350,6 +274,7 @@ export default function Settings(): JSX.Element {
       setWasConnected(true);
       setNextSync(res.data?.nextSync || null);
 
+      // ── Auto-sync on first-time setup ──
       if (isFirstTimeSave) {
         setSyncResult({ ok: true, message: "Canvas connected! Running first sync…" });
         try {
@@ -605,7 +530,6 @@ export default function Settings(): JSX.Element {
           {/* ════════ PREFERENCES ════════ */}
           <div className="sett-group">
             <div className="sett-group-label">Preferences</div>
-
             <Row panelKey="firstday" icon={<IconCalendar />} label="First Day of Week" value={DOW_OPTIONS.find(o => o.val === firstDay)?.label || "Sunday"} />
             <div className={`sett-expand${openPanel === "firstday" ? " is-open" : ""}`}>
               <div className="sett-expand-form">
@@ -623,111 +547,6 @@ export default function Settings(): JSX.Element {
                 </div>
                 {firstDaySaving && <p style={{ margin: 0, fontSize: "0.88rem", color: "var(--text-soft)" }}>Saving…</p>}
               </div>
-            </div>
-
-            {/* ── Study Planner ── */}
-            <Row
-              panelKey="planner"
-              icon={<IconPlanner />}
-              label="Study Planner"
-              value={plannerRowValue()}
-            />
-            <div className={`sett-expand${openPanel === "planner" ? " is-open" : ""}`}>
-              <form className="sett-expand-form" onSubmit={handlePlannerSave}>
-
-                {/* ── Start scheduling up to ── */}
-                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                  <label
-                    htmlFor="planner-advance"
-                    style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-soft)" }}
-                  >
-                    Start scheduling up to
-                    <span style={{ fontWeight: 400, marginLeft: "4px", color: "var(--text-faint)" }}>
-                      (days before due date) &mdash; min 2, max 365
-                    </span>
-                  </label>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <input
-                      id="planner-advance"
-                      className="sett-expand-input"
-                      type="number"
-                      min={2}
-                      max={365}
-                      step={1}
-                      value={plannerAdvance || ""}
-                      onChange={e => handleAdvanceChange(e.target.value)}
-                      onKeyDown={e => { if (e.key === "." || e.key === "," || e.key === "-" || e.key === "e") e.preventDefault(); }}
-                      style={{ maxWidth: "120px" }}
-                      placeholder="7"
-                    />
-                    <span style={{ fontSize: "0.9rem", color: "var(--text-soft)" }}>days</span>
-                  </div>
-                </div>
-
-                {/* ── Finish at least ── */}
-                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                  <label
-                    htmlFor="planner-buffer"
-                    style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-soft)" }}
-                  >
-                    Finish at least
-                    <span style={{ fontWeight: 400, marginLeft: "4px", color: "var(--text-faint)" }}>
-                      (hours before due date) &mdash; min 1, max 24
-                    </span>
-                  </label>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <input
-                      id="planner-buffer"
-                      className="sett-expand-input"
-                      type="number"
-                      min={1}
-                      max={24}
-                      step={1}
-                      value={plannerBuffer || ""}
-                      onChange={e => handleBufferChange(e.target.value)}
-                      onKeyDown={e => { if (e.key === "." || e.key === "," || e.key === "-" || e.key === "e") e.preventDefault(); }}
-                      style={{ maxWidth: "120px" }}
-                      placeholder="24"
-                    />
-                    <span style={{ fontSize: "0.9rem", color: "var(--text-soft)" }}>hours</span>
-                  </div>
-                </div>
-
-                {/* ── Window hint ── */}
-                {plannerAdvance >= 2 && plannerBuffer >= 1 && (
-                  <p style={{
-                    margin: 0,
-                    fontSize: "0.83rem",
-                    color: (plannerAdvance * 24 - plannerBuffer) >= 24
-                      ? "var(--text-soft)"
-                      : "var(--error-text)",
-                  }}>
-                    Scheduling window: <strong>{plannerAdvance * 24 - plannerBuffer}h</strong>
-                    {(plannerAdvance * 24 - plannerBuffer) < 24
-                      ? " — must be at least 24h"
-                      : " ✓"}
-                  </p>
-                )}
-
-                {plannerError && <p className="sett-expand-error">{plannerError}</p>}
-
-                <div className="sett-expand-row">
-                  <button
-                    type="submit"
-                    className="sett-expand-btn sett-expand-btn-primary"
-                    disabled={plannerSaving}
-                  >
-                    {plannerSaving ? "Saving…" : "Save"}
-                  </button>
-                  <button
-                    type="button"
-                    className="sett-expand-btn sett-expand-btn-secondary"
-                    onClick={() => togglePanel(null)}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
             </div>
           </div>
 
