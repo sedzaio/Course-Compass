@@ -1,13 +1,15 @@
 const mongoose = require('mongoose');
 
 const courseSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  title: { type: String, required: true },
-  code: { type: String },
+  userId:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  canvasId:  { type: String, default: null },
+  title:     { type: String, required: true },
+  code:      { type: String },
   instructor: { type: String },
-  color: { type: String, default: '#000000' },
-  semester: { type: String },
-  isActive: { type: Boolean, default: true }
+  color:     { type: String, default: '#81A6C6' },
+  semester:  { type: String },
+  isActive:  { type: Boolean, default: true },
+  isHidden:  { type: Boolean, default: false }
 });
 
 module.exports = mongoose.model('Course', courseSchema);

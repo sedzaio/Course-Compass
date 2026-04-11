@@ -1,5 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import logo from "../styles/logo.png";
+import "../styles/app.css";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "https://team12.me";
@@ -77,80 +79,98 @@ export default function ResetPassword() {
   }
 
   return (
-    <div>
-      <h1>Reset Password</h1>
-
-      <form onSubmit={handleSubmit}>
-        <div>
-          <label htmlFor="email">Email</label>
+    <div className="auth-shell">
+      <div className="auth-container auth-container-column">
+        <div className="auth-top-link-wrap">
+          <Link className="auth-back-link" to="/login">
+            ← Back to login
+          </Link>
         </div>
-        <input
-          id="email"
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
-        />
 
-        <div style={{ marginTop: "12px" }}>
-          <label htmlFor="code">Reset Code</label>
+        <div className="auth-panel">
+          <div className="auth-logo-wrap">
+            <img src={logo} alt="Course Compass logo" className="auth-logo" />
+          </div>
+
+          {message && <p className="auth-message auth-message-success">{message}</p>}
+          {error && <p className="auth-message auth-message-error">{error}</p>}
+
+          <form className="auth-form" onSubmit={handleSubmit}>
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="email">
+                Email
+              </label>
+              <input
+                id="email"
+                className="auth-input"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Enter your email"
+                required
+              />
+            </div>
+
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="code">
+                Reset Code
+              </label>
+              <input
+                id="code"
+                className="auth-input"
+                type="text"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="Enter reset code"
+                required
+              />
+            </div>
+
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="newPassword">
+                New Password
+              </label>
+              <input
+                id="newPassword"
+                className="auth-input"
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="Enter new password"
+                required
+              />
+            </div>
+
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="confirmPassword">
+                Confirm New Password
+              </label>
+              <input
+                id="confirmPassword"
+                className="auth-input"
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Confirm new password"
+                required
+              />
+            </div>
+
+            <button className="auth-submit" type="submit" disabled={loading}>
+              {loading ? "Resetting..." : "Reset Password"}
+            </button>
+          </form>
+
+          <div className="auth-footer">
+            <p className="auth-footer-text">
+              Need a new code?{" "}
+              <Link className="auth-footer-link" to="/forgot-password">
+                Try again
+              </Link>
+            </p>
+          </div>
         </div>
-        <input
-          id="code"
-          type="text"
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          required
-        />
-
-        <div style={{ marginTop: "12px" }}>
-          <label htmlFor="newPassword">New Password</label>
-        </div>
-        <input
-          id="newPassword"
-          type="password"
-          value={newPassword}
-          onChange={(e) => setNewPassword(e.target.value)}
-          required
-        />
-
-        <div style={{ marginTop: "12px" }}>
-          <label htmlFor="confirmPassword">Confirm New Password</label>
-        </div>
-        <input
-          id="confirmPassword"
-          type="password"
-          value={confirmPassword}
-          onChange={(e) => setConfirmPassword(e.target.value)}
-          required
-        />
-
-        <div style={{ marginTop: "12px" }}>
-          <button type="submit" disabled={loading}>
-            {loading ? "Resetting..." : "Reset Password"}
-          </button>
-        </div>
-      </form>
-
-      {message && (
-        <p style={{ color: "green", marginTop: "12px" }}>
-          {message}
-        </p>
-      )}
-
-      {error && (
-        <p style={{ color: "red", marginTop: "12px" }}>
-          {error}
-        </p>
-      )}
-
-      <p style={{ marginTop: "12px" }}>
-        <Link to="/forgot-password">Go back</Link>
-      </p>
-
-      <p style={{ marginTop: "12px" }}>
-        <Link to="/login">Back to Login</Link>
-      </p>
+      </div>
     </div>
   );
 }

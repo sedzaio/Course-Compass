@@ -1,5 +1,7 @@
 import { FormEvent, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import logo from "../styles/logo.png";
+import "../styles/app.css";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "https://team12.me";
@@ -45,42 +47,52 @@ export default function ForgotPassword() {
   }
 
   return (
-    <div>
-      <h1>Forgot Password</h1>
-
-      <form onSubmit={handleSubmit}>
-        <div>
-          <label htmlFor="email">Email</label>
+    <div className="auth-shell">
+      <div className="auth-container auth-container-column">
+        <div className="auth-top-link-wrap">
+          <Link className="auth-back-link" to="/login">
+            ← Back to login
+          </Link>
         </div>
 
-        <input
-          id="email"
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
-        />
+        <div className="auth-panel">
+          <div className="auth-logo-wrap">
+            <img src={logo} alt="Course Compass logo" className="auth-logo" />
+          </div>
 
-        <div style={{ marginTop: "12px" }}>
-          <button type="submit" disabled={loading}>
-            {loading ? "Sending..." : "Send Reset Code"}
-          </button>
+          <form className="auth-form" onSubmit={handleSubmit}>
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="email">
+                Email
+              </label>
+              <input
+                id="email"
+                className="auth-input"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Enter your email"
+                required
+              />
+            </div>
+
+            {error && <p className="auth-message auth-message-error">{error}</p>}
+
+            <button className="auth-submit" type="submit" disabled={loading}>
+              {loading ? "Sending..." : "Send Reset Code"}
+            </button>
+          </form>
+
+          <div className="auth-footer">
+            <p className="auth-footer-text">
+              Have a code already?{" "}
+              <Link className="auth-footer-link" to="/reset-password">
+                Reset password
+              </Link>
+            </p>
+          </div>
         </div>
-      </form>
-
-      {error && (
-        <p style={{ color: "red", marginTop: "12px" }}>
-          {error}
-        </p>
-      )}
-
-      <p style={{ marginTop: "12px" }}>
-        <Link to="/reset-password">Already have a reset code?</Link>
-      </p>
-
-      <p style={{ marginTop: "12px" }}>
-        <Link to="/login">Back to Login</Link>
-      </p>
+      </div>
     </div>
   );
 }

@@ -1,7 +1,9 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import api from '../api';
+import logo from '../styles/logo.png';
+import '../styles/app.css';
 
 export default function Login(): JSX.Element {
   const [email, setEmail] = useState('');
@@ -27,36 +29,67 @@ export default function Login(): JSX.Element {
   };
 
   return (
-    <div>
-      <h1>Course Compass</h1>
-      <h2>Login</h2>
-      <form onSubmit={handleSubmit}>
-        <div>
-          <label>Email</label><br />
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
+    <div className="auth-shell">
+      <div className="auth-container">
+        <div className="auth-panel">
+          <div className="auth-logo-wrap">
+            <img src={logo} alt="Course Compass logo" className="auth-logo" />
+          </div>
+
+          <form className="auth-form" onSubmit={handleSubmit}>
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="email">
+                Email
+              </label>
+              <input
+                id="email"
+                className="auth-input"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Enter your email"
+                required
+              />
+            </div>
+
+            <div className="auth-field">
+              <div className="auth-label-row">
+                <label className="auth-label" htmlFor="password">
+                  Password
+                </label>
+                <Link className="auth-inline-link" to="/forgot-password">
+                  Forgot password?
+                </Link>
+              </div>
+
+              <input
+                id="password"
+                className="auth-input"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter your password"
+                required
+              />
+            </div>
+
+            {error && <p className="auth-message auth-message-error">{error}</p>}
+
+            <button className="auth-submit" type="submit">
+              Login
+            </button>
+          </form>
+
+          <div className="auth-footer">
+            <p className="auth-footer-text">
+              Don&apos;t have an account?{' '}
+              <Link className="auth-footer-link" to="/register">
+                Register
+              </Link>
+            </p>
+          </div>
         </div>
-        <br />
-        <div>
-          <label>Password</label><br />
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-        </div>
-        <br />
-        {error && <p style={{ color: 'red' }}>{error}</p>}
-        <button type="submit">Login</button>
-      </form>
-      <br />
-      <a href="/register">Don't have an account? Register</a><br />
-      <a href="/forgot-password">Forgot password?</a>
+      </div>
     </div>
   );
 }

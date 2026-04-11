@@ -1,14 +1,60 @@
+// api/src/models/Assignment.js
 const mongoose = require('mongoose');
 
 const assignmentSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  courseId: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', required: true },
-  title: { type: String, required: true },
-  description: { type: String },
-  type: { type: String },
-  dueDate: { type: Date },
-  status: { type: String, default: 'todo' },
-  priority: { type: Number, default: 0 }
-});
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  courseId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Course',
+    default: null
+  },
+  title: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  description: {
+    type: String,
+    default: ''
+  },
+  dueDate: {
+    type: Date,
+    default: null
+  },
+  completed: {
+    type: Boolean,
+    default: false
+  },
+  type: {
+    type: String,
+    enum: ['assignment', 'quiz', 'exam', 'project', 'reading', 'other'],
+    default: 'assignment'
+  },
+  estimatedTime: {
+    type: Number,
+    default: null
+  },
+  aiGenerated: {
+    type: Boolean,
+    default: false
+  },
+  canvasId: {
+    type: String,
+    default: null
+  },
+  canvasUrl: {
+    type: String,
+    default: null
+  },
+  source: {
+    type: String,
+    enum: ['manual', 'canvas'],
+    default: 'manual'
+  }
+}, { timestamps: true });
 
 module.exports = mongoose.model('Assignment', assignmentSchema);
