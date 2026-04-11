@@ -51,6 +51,7 @@ type Assignment = {
   courseId?: string | null;
   canvasUrl?: string | null;
   source?: string;
+  dueDate?: string | null;
 };
 
 type StoredUser = { id?: string; _id?: string; name?: string; email?: string };
@@ -213,6 +214,18 @@ function fmtHours(h: number): string {
   return `${hrs}h${min}m`;
 }
 
+function fmtDueDate(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const date = d.toLocaleDateString(undefined, {
+    weekday: "short", month: "short", day: "numeric", year: "numeric",
+  });
+  // If exactly midnight local time treat as date-only
+  const isMidnight = d.getHours() === 0 && d.getMinutes() === 0;
+  return isMidnight ? date : `${date} at ${time}`;
+}
+
 function getBadgeLabel(course?: Course | null): string {
   if (!course) return "";
   const raw = course.code || course.title || course.name || "";
@@ -246,8 +259,6 @@ export default function StudyPlanner(): JSX.Element {
   const [advanceDays, setAdvanceDays] = useState<number>(7);
 
   // ── Gate: don't load plan until preferences have been fetched ─────────────────────
-  // This prevents loadPlan from firing twice with two different weekStartStr values
-  // (once with the default "sunday" and again after prefs say "monday").
   const [prefsLoaded, setPrefsLoaded] = useState(false);
 
   const [courses, setCourses] = useState<Course[]>([]);
@@ -296,8 +307,6 @@ export default function StudyPlanner(): JSX.Element {
 
   useEffect(() => { if (!token) navigate("/login"); }, [token, navigate]);
 
-  // ── Load preferences FIRST, then set prefsLoaded = true ──────────────────────────
-  // loadPlan is gated on prefsLoaded so it always uses the correct weekStartStr.
   useEffect(() => {
     if (!token) return;
     const h = { headers: { Authorization: `Bearer ${token}` } };
@@ -362,18 +371,12 @@ export default function StudyPlanner(): JSX.Element {
       .finally(() => setPlanLoading(false));
   }, [token, weekStartStr]);
 
-  // ── Only run loadPlan after preferences have settled ─────────────────────────────
-  // Without this gate, loadPlan fires with weekStartStr="2026-04-06" (sunday default),
-  // then fires again with weekStartStr="2026-04-07" (monday from prefs), causing two
-  // separate GET calls. If autoGenerate=true, the first 404 triggers generation with
-  // the wrong weekStart, creating a duplicate/stale document.
   useEffect(() => {
     if (!prefsLoaded) return;
     loadPlan();
   }, [loadPlan, prefsLoaded]);
 
   // ── Auto-generate if ?autoGenerate=true — fires exactly once after load resolves ──
-  // Also gated on prefsLoaded so weekStartStr is final before handleGenerate is called.
   useEffect(() => {
     if (searchParams.get("autoGenerate") !== "true") return;
     if (!prefsLoaded) return;
@@ -493,6 +496,7 @@ export default function StudyPlanner(): JSX.Element {
     const color       = course?.color || null;
     const isCanvas    = assignment?.source === "canvas";
     const canvasUrl   = isCanvas ? (assignment as any)?.canvasUrl || null : null;
+    const dueDate     = assignment?.dueDate || null;
     const siblings    = sessions
       .filter(x => x.assignmentId === s.assignmentId)
       .sort((a, b) => a.date.localeCompare(b.date) || a.from.localeCompare(b.from));
@@ -500,7 +504,7 @@ export default function StudyPlanner(): JSX.Element {
     const siblingsDone  = siblings.filter(x => x.completed).length;
     const partIdx       = siblings.findIndex(x => x._id === s._id) + 1;
     const showPartBadge = siblingsTotal > 1;
-    return { assignment, course, badgeLabel, color, canvasUrl, isCanvas, siblingsTotal, siblingsDone, partIdx, showPartBadge };
+    return { assignment, course, badgeLabel, color, canvasUrl, isCanvas, dueDate, siblingsTotal, siblingsDone, partIdx, showPartBadge };
   }
 
   // ─── Topbar ──────────────────────────────────────────────────────────────────────
@@ -606,7 +610,26 @@ export default function StudyPlanner(): JSX.Element {
     if (!detailSession) return null;
     const s = detailSession;
     const live = sessions.find(x => x._id === s._id) || s;
-    const { badgeLabel, color, canvasUrl, course, siblingsDone, siblingsTotal, partIdx, showPartBadge } = getCardMeta(live);
+    const { badgeLabel, color, canvasUrl, course, dueDate, siblingsDone, siblingsTotal, partIdx, showPartBadge } = getCardMeta(live);
+
+    // Determine urgency styling for due date
+    const dueDateUrgency = (() => {
+      if (!dueDate) return null;
+      const due = new Date(dueDate);
+      const now = new Date();
+      const diffMs = due.getTime() - now.getTime();
+      const diffH = diffMs / (1000 * 60 * 60);
+      if (diffMs < 0) return "overdue";
+      if (diffH < 24) return "soon";
+      if (diffH < 72) return "upcoming";
+      return "normal";
+    })();
+
+    const dueDateColor =
+      dueDateUrgency === "overdue" ? "#c97b7b" :
+      dueDateUrgency === "soon"    ? "#C9A050" :
+      dueDateUrgency === "upcoming"? "#81A6C6" :
+      "inherit";
 
     return (
       <div className="sp2-modal-backdrop" onClick={() => setDetailSession(null)}>
@@ -646,6 +669,28 @@ export default function StudyPlanner(): JSX.Element {
                 <span className="sp2-dur-chip" style={{ marginLeft: 6 }}>{fmtHours(live.hours)}</span>
               </span>
             </div>
+
+            {/* ── Due date row ── */}
+            <div className="sp2-modal-row">
+              <span className="sp2-modal-label">Due</span>
+              <span className="sp2-modal-val" style={{ color: dueDateColor, fontWeight: dueDateUrgency === "overdue" || dueDateUrgency === "soon" ? 600 : undefined }}>
+                {dueDate
+                  ? (
+                    <>
+                      {fmtDueDate(dueDate)}
+                      {dueDateUrgency === "overdue" && (
+                        <span className="sp2-modal-due-chip sp2-modal-due-overdue">Overdue</span>
+                      )}
+                      {dueDateUrgency === "soon" && (
+                        <span className="sp2-modal-due-chip sp2-modal-due-soon">Due soon</span>
+                      )}
+                    </>
+                  )
+                  : <span style={{ color: "var(--text-muted, #999)", fontStyle: "italic" }}>No due date</span>
+                }
+              </span>
+            </div>
+
             {course && (
               <div className="sp2-modal-row">
                 <span className="sp2-modal-label">Course</span>
@@ -814,9 +859,6 @@ export default function StudyPlanner(): JSX.Element {
             </div>
           )}
 
-          {/* ─────────────────────────────────────────────────────────────────────── */}
-          {/* ── CRITICAL banner — non-collapsible, single-column layout                ── */}
-          {/* ─────────────────────────────────────────────────────────────────────── */}
           {hasPlan && criticalItems.length > 0 && (
             <div className="sp-alert sp-alert-critical">
               <div className="sp-alert-critical-header">
@@ -841,9 +883,6 @@ export default function StudyPlanner(): JSX.Element {
             </div>
           )}
 
-          {/* ─────────────────────────────────────────────────────────────────────── */}
-          {/* ── SOFT banner — collapsible amber                                        ── */}
-          {/* ─────────────────────────────────────────────────────────────────────── */}
           {hasPlan && softItems.length > 0 && (
             <div className="sp-alert sp-alert-soft sp-alert-collapsible">
               <button className="sp-alert-toggle" onClick={() => setSoftCollapsed(v => !v)}>
@@ -869,7 +908,6 @@ export default function StudyPlanner(): JSX.Element {
             </div>
           )}
 
-          {/* ── Partially scheduled warnings ── */}
           {hasPlan && warnings.length > 0 && (
             <div className="sp-alert sp-alert-warn sp-alert-collapsible">
               <button className="sp-alert-toggle" onClick={() => setWarnCollapsed(v => !v)}>
