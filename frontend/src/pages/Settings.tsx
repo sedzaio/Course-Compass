@@ -51,6 +51,20 @@ function IconPlanner()  { return <svg width="16" height="16" viewBox="0 0 24 24"
 function IconPlus()     { return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>; }
 function IconTrash()    { return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>; }
 function IconWindow()   { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>; }
+function IconEye({ off }: { off?: boolean }) {
+  return off ? (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </svg>
+  ) : (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -80,6 +94,40 @@ function hoursToBuffer(hours: number): { val: number; unit: "days" | "hours" } {
 
 function blockNonInteger(e: React.KeyboardEvent<HTMLInputElement>) {
   if (["." , ",", "-", "e", "E", "+"].includes(e.key)) e.preventDefault();
+}
+
+// ─── PasswordInput helper ─────────────────────────────────────────────────────
+
+function PasswordInput({
+  value, onChange, placeholder, autoComplete,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  autoComplete?: string;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="auth-input-wrap">
+      <input
+        className="sett-expand-input"
+        type={show ? "text" : "password"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoComplete={autoComplete}
+      />
+      <button
+        type="button"
+        className="auth-eye-btn auth-eye-btn-sm"
+        onClick={() => setShow((v) => !v)}
+        aria-label={show ? "Hide password" : "Show password"}
+        tabIndex={-1}
+      >
+        <IconEye off={show} />
+      </button>
+    </div>
+  );
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -535,9 +583,9 @@ export default function Settings(): JSX.Element {
             <Row panelKey="password" icon={<IconLock />} label="Change Password" value="••••••••" />
             <div className={`sett-expand${openPanel === "password" ? " is-open" : ""}`}>
               <form className="sett-expand-form" onSubmit={handlePasswordSave}>
-                <input className="sett-expand-input" type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} placeholder="Current password" autoComplete="current-password" />
-                <input className="sett-expand-input" type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="New password" autoComplete="new-password" />
-                <input className="sett-expand-input" type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="Repeat new password" autoComplete="new-password" />
+                <PasswordInput value={currentPassword} onChange={setCurrentPassword} placeholder="Current password" autoComplete="current-password" />
+                <PasswordInput value={newPassword} onChange={setNewPassword} placeholder="New password" autoComplete="new-password" />
+                <PasswordInput value={confirmPassword} onChange={setConfirmPassword} placeholder="Repeat new password" autoComplete="new-password" />
                 {passwordError && <p className="sett-expand-error">{passwordError}</p>}
                 <div className="sett-expand-row">
                   <button type="submit" className="sett-expand-btn sett-expand-btn-primary" disabled={passwordSaving}>{passwordSaving ? "Saving…" : "Save"}</button>
@@ -698,7 +746,9 @@ export default function Settings(): JSX.Element {
                   {canvasSaved && canvasUrl && (
                     <p style={{ margin: "0 0 4px", fontSize: "0.85rem", color: "var(--text-soft)" }}>Connected to <strong>{canvasUrl}</strong></p>
                   )}
-                  <input className="sett-expand-input" type="password" value={canvasToken} onChange={e => setCanvasToken(e.target.value)} placeholder="Canvas API token" autoComplete="off" />
+                  <div className="auth-input-wrap">
+                    <input className="sett-expand-input" type={canvasToken ? "password" : "text"} value={canvasToken} onChange={e => setCanvasToken(e.target.value)} placeholder="Canvas API token" autoComplete="off" style={{ flex: 1 }} />
+                  </div>
                   <input className="sett-expand-input" type="url" value={canvasUrl} onChange={e => setCanvasUrl(e.target.value)} placeholder="https://canvas.instructure.com" />
                   <div className="sett-canvas-freq-row">
                     <span className="sett-canvas-freq-label">Sync frequency</span>
@@ -748,7 +798,7 @@ export default function Settings(): JSX.Element {
                 <p style={{ margin: 0, fontSize: "0.9rem", color: "var(--error-text)", fontWeight: 600 }}>
                   ⚠️ This action is permanent and cannot be undone. All your courses, assignments, and data will be deleted.
                 </p>
-                <input className="sett-expand-input" type="password" value={closePassword} onChange={e => setClosePassword(e.target.value)} placeholder="Enter your current password to confirm" autoComplete="current-password" />
+                <PasswordInput value={closePassword} onChange={setClosePassword} placeholder="Enter your current password to confirm" autoComplete="current-password" />
                 {closeError && <p className="sett-expand-error">{closeError}</p>}
                 <div className="sett-expand-row">
                   <button type="submit" disabled={closeSaving}
