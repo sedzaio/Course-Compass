@@ -1083,15 +1083,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
 class _SettingsScreenState extends State<SettingsScreen> {
   Map<String, dynamic>? user;
   Map<String, dynamic>? canvasSettings;
+  Map<String, dynamic>? preferences;
+  Map<String, dynamic>? plannerPrefs;
   bool loading = true;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Settings', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: Image.asset('assets/images/logo2.png', height: 32),
         backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
         elevation: 1,
       ),
       body: loading
@@ -1103,14 +1104,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   margin: const EdgeInsets.symmetric(horizontal: 16),
                   child: Column(
                     children: [
-                      _settingsTile('Edit Profile', user?['name'] ?? '', Icons.person, () {}),
+                      _settingsTile('Edit Profile', user?['name'] ?? '', Icons.person, showEditProfileDialog),
                       const Divider(height: 1),
-                      _settingsTile('Email', user?['email'] ?? '', Icons.email, () {}),
+                      _settingsTile('Email', user?['email'] ?? '', Icons.email, showChangeEmailDialog),
                       const Divider(height: 1),
-                      _settingsTile('Change Password', '••••••••', Icons.lock, () {}),
+                      _settingsTile('Change Password', '••••••••', Icons.lock, showChangePasswordDialog),
                     ],
                   ),
                 ),
+                const Padding(padding: EdgeInsets.fromLTRB(16, 16, 16, 8), child: Text('PREFERENCES', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey))),
+                Card(
+                  margin: const EdgeInsets.symmetric(horizontal: 16),
+                  child: _settingsTile(
+                    'First Day of Week',
+                    (preferences?['firstDayOfWeek'] ?? 'sunday')[0].toUpperCase() + (preferences?['firstDayOfWeek'] ?? 'sunday').substring(1),
+                    Icons.calendar_today,
+                    showFirstDayDialog,
+                  ),
+                ),
+                const Padding(padding: EdgeInsets.fromLTRB(16, 16, 16, 8), child: Text('STUDY PLANNER', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey))),
+                Card(
+                  margin: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Column(
+                    children: [
+                      _settingsTile('Availability Blocks', _availabilitySubtitle(), Icons.calendar_month, showAvailabilityDialog),
+                      const Divider(height: 1),
+                      _settingsTile('Scheduling Window', _schedulingSubtitle(), Icons.schedule, showSchedulingWindowDialog),
+                    ],
+                  ),
+                ),
+
                 const Padding(padding: EdgeInsets.fromLTRB(16, 16, 16, 8), child: Text('INTEGRATIONS', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey))),
                 Card(
                   margin: const EdgeInsets.symmetric(horizontal: 16),
@@ -1118,7 +1141,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     'Canvas LMS',
                     canvasSettings?['connected'] == true ? 'Connected' : 'Not connected',
                     Icons.sync,
-                    () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CanvasSettingsScreen())).then((_) => loadData()),
+                    showCanvasDialog,
                   ),
                 ),
                 const Padding(padding: EdgeInsets.fromLTRB(16, 16, 16, 8), child: Text('DANGER ZONE', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.red))),
@@ -1160,11 +1183,315 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final u = await getUser();
       Map<String, dynamic>? canvas;
+      Map<String, dynamic>? prefs;
+      Map<String, dynamic>? planner;
       try { canvas = await getCanvasSettings(); } catch (_) {}
-      setState(() { user = u; canvasSettings = canvas; loading = false; });
+      try { prefs = await getPreferences(); } catch (_) {}
+      try { planner = await getPlannerPreferences(); } catch (_) {}
+      setState(() { user = u; canvasSettings = canvas; preferences = prefs; plannerPrefs = planner; loading = false; });
     } catch (e) {
       setState(() => loading = false);
     }
+  }
+
+  void showAvailabilityDialog() {
+    final days = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+    final avail = Map<String, dynamic>.from(plannerPrefs?['availability'] ?? {});
+    for (final d in days) {
+      avail[d] ??= {'enabled': false, 'startTime': '09:00', 'endTime': '21:00'};
+    }
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: const Text('Availability Blocks'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: days.map((day) {
+                final block = avail[day] as Map<String, dynamic>;
+                final enabled = block['enabled'] == true;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Checkbox(
+                          value: enabled,
+                          onChanged: (val) => setState(() => block['enabled'] = val),
+                        ),
+                        Text(day[0].toUpperCase() + day.substring(1), style: const TextStyle(fontWeight: FontWeight.w500)),
+                      ],
+                    ),
+                    if (enabled) Padding(
+                      padding: const EdgeInsets.only(left: 16, bottom: 8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: TextEditingController(text: block['startTime']),
+                              decoration: const InputDecoration(labelText: 'Start', border: OutlineInputBorder()),
+                              onChanged: (v) => block['startTime'] = v,
+                            ),
+                          ),
+                          const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text('to')),
+                          Expanded(
+                            child: TextField(
+                              controller: TextEditingController(text: block['endTime']),
+                              decoration: const InputDecoration(labelText: 'End', border: OutlineInputBorder()),
+                              onChanged: (v) => block['endTime'] = v,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              }).toList(),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () async {
+                await updatePlannerPreferences({'availability': avail});
+                if (!ctx.mounted) return;
+                Navigator.pop(ctx);
+                loadData();
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A90B8), foregroundColor: Colors.white),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void showCanvasDialog() {
+  final tokenController = TextEditingController();
+  final urlController = TextEditingController(text: canvasSettings?['canvasUrl'] ?? '');
+  String syncFrequency = canvasSettings?['syncFrequency'] ?? 'weekly';
+
+  showDialog(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setState) => AlertDialog(
+        title: const Text('Canvas LMS'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (canvasSettings?['connected'] == true) ...[
+                const Text('Status: Connected ✅', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                Text('Last synced: ${canvasSettings?['lastSynced'] ?? 'Never'}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: () async {
+                        final data = await syncCanvas();
+                        if (!ctx.mounted) return;
+                        Navigator.pop(ctx);
+                        loadData();
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Synced ${data['count'] ?? 0} assignments!')));
+                      },
+                      icon: const Icon(Icons.sync, size: 14),
+                      label: const Text('Sync Now'),
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A90B8), foregroundColor: Colors.white),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton(
+                      onPressed: () async {
+                        await disconnectCanvas();
+                        if (!ctx.mounted) return;
+                        Navigator.pop(ctx);
+                        loadData();
+                      },
+                      style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                      child: const Text('Disconnect'),
+                    ),
+                  ],
+                ),
+                const Divider(height: 24),
+              ],
+              TextField(
+                controller: tokenController,
+                decoration: const InputDecoration(hintText: 'Canvas API token', border: OutlineInputBorder()),
+                obscureText: true,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: urlController,
+                decoration: const InputDecoration(hintText: 'https://canvas.instructure.com', border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 16),
+              const Text('SYNC FREQUENCY', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey, letterSpacing: 1)),
+              const SizedBox(height: 8),
+              ...['daily', 'weekly', 'monthly'].map((freq) {
+                final label = freq == 'daily' ? 'Every day' : freq == 'weekly' ? 'Every week' : 'Every month';
+                final isSelected = syncFrequency == freq;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () => setState(() => syncFrequency = freq),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: isSelected ? const Color(0xFF4A90B8) : Colors.white,
+                        foregroundColor: isSelected ? Colors.white : Colors.black,
+                        side: const BorderSide(color: Color(0xFF4A90B8)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      child: Text(label),
+                    ),
+                  ),
+                );
+              }),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              await saveCanvasSettings({
+                'canvasToken': tokenController.text,
+                'canvasUrl': urlController.text,
+                'syncFrequency': syncFrequency,
+              });
+              if (!ctx.mounted) return;
+              Navigator.pop(ctx);
+              loadData();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A90B8), foregroundColor: Colors.white),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+  void showChangeEmailDialog() {
+    final emailController = TextEditingController();
+    final codeController = TextEditingController();
+    String step = 'email';
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: const Text('Change Email'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (step == 'email') ...[
+                const Text('Enter your new email address:', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: emailController,
+                  decoration: const InputDecoration(labelText: 'New Email', border: OutlineInputBorder()),
+                  keyboardType: TextInputType.emailAddress,
+                ),
+              ] else ...[
+                Text('Enter the verification code sent to ${emailController.text}', style: const TextStyle(color: Colors.grey, fontSize: 13)),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: codeController,
+                  decoration: const InputDecoration(labelText: 'Verification Code', border: OutlineInputBorder()),
+                  keyboardType: TextInputType.number,
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () async {
+                if (step == 'email') {
+                  if (!emailController.text.contains('@')) return;
+                  await sendCode(emailController.text.trim());
+                  setState(() => step = 'code');
+                } else {
+                  final result = await updateAccount({
+                    'email': emailController.text.trim(),
+                    'code': codeController.text.trim(),
+                  });
+                  if (result['user'] != null) await saveUser(result['user']);
+                  if (!ctx.mounted) return;
+                  Navigator.pop(ctx);
+                  loadData();
+                }
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A90B8), foregroundColor: Colors.white),
+              child: Text(step == 'email' ? 'Get Code' : 'Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void showChangePasswordDialog() {
+    final currentController = TextEditingController();
+    final newController = TextEditingController();
+    final repeatController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Change Password'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: currentController,
+              decoration: const InputDecoration(labelText: 'Current password', border: OutlineInputBorder()),
+              obscureText: true,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: newController,
+              decoration: const InputDecoration(labelText: 'New password', border: OutlineInputBorder()),
+              obscureText: true,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: repeatController,
+              decoration: const InputDecoration(labelText: 'Repeat new password', border: OutlineInputBorder()),
+              obscureText: true,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              if (newController.text != repeatController.text) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(backgroundColor: Colors.red, content: Text('Passwords do not match')),
+                );
+                return;
+              }
+              await updateAccount({
+                'currentPassword': currentController.text,
+                'newPassword': newController.text,
+              });
+              if (!ctx.mounted) return;
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(backgroundColor: Colors.green, content: Text('Password updated!')),
+              );
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A90B8), foregroundColor: Colors.white),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
   }
 
   void showDeleteAccountDialog(BuildContext context) {
@@ -1176,28 +1503,187 @@ class _SettingsScreenState extends State<SettingsScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('This will permanently delete your account and ALL data. Enter your password to confirm.'),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red.shade50,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.warning_amber, color: Colors.red, size: 18),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'This action is permanent and cannot be undone. All your courses, assignments, and data will be deleted.',
+                      style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 16),
-            TextField(controller: passwordController, decoration: const InputDecoration(labelText: 'Password', border: OutlineInputBorder()), obscureText: true),
+            TextField(
+              controller: passwordController,
+              decoration: const InputDecoration(hintText: 'Enter your current password to confirm', border: OutlineInputBorder()),
+              obscureText: true,
+            ),
           ],
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () async {
-              await deleteAccount(passwordController.text);
-              await clearToken();
-              if (!ctx.mounted) return;
-              Navigator.pushReplacement(ctx, MaterialPageRoute(builder: (_) => const LoginScreen()));
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-            child: const Text('Delete Account'),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: () async {
+                await deleteAccount(passwordController.text);
+                await clearToken();
+                if (!ctx.mounted) return;
+                Navigator.pushReplacement(ctx, MaterialPageRoute(builder: (_) => const LoginScreen()));
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 14)),
+              child: const Text('Close My Account'),
+            ),
           ),
         ],
       ),
     );
   }
 
+  void showEditProfileDialog() {
+    final nameController = TextEditingController(text: user?['name'] ?? '');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Edit Profile'),
+        content: TextField(
+          controller: nameController,
+          decoration: const InputDecoration(labelText: 'Full Name', border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              final result = await updateAccount({'name': nameController.text.trim()});
+              if (result['user'] != null) await saveUser(result['user']);
+              if (!ctx.mounted) return;
+              Navigator.pop(ctx);
+              loadData();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A90B8), foregroundColor: Colors.white),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void showFirstDayDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: const Text('First Day of Week'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: ['sunday', 'monday'].map((day) {
+              final isSelected = (preferences?['firstDayOfWeek'] ?? 'sunday') == day;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      await updatePreferences({'firstDayOfWeek': day});
+                      if (!ctx.mounted) return;
+                      Navigator.pop(ctx);
+                      loadData();
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: isSelected ? const Color(0xFF4A90B8) : Colors.white,
+                      foregroundColor: isSelected ? Colors.white : Colors.black,
+                      side: const BorderSide(color: Color(0xFF4A90B8)),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: Text(day[0].toUpperCase() + day.substring(1)),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void showSchedulingWindowDialog() {
+    final advanceController = TextEditingController(text: '${plannerPrefs?['advanceDays'] ?? 7}');
+    final bufferController = TextEditingController(text: '${plannerPrefs?['bufferHours'] ?? 24}');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Scheduling Window'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Start scheduling up to', style: TextStyle(fontWeight: FontWeight.w500)),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                SizedBox(width: 80, child: TextField(controller: advanceController, decoration: const InputDecoration(border: OutlineInputBorder()), keyboardType: TextInputType.number)),
+                const SizedBox(width: 8),
+                const Text('days before due'),
+              ],
+            ),
+            const SizedBox(height: 16),
+            const Text('Finish at least', style: TextStyle(fontWeight: FontWeight.w500)),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                SizedBox(width: 80, child: TextField(controller: bufferController, decoration: const InputDecoration(border: OutlineInputBorder()), keyboardType: TextInputType.number)),
+                const SizedBox(width: 8),
+                const Text('hours before due'),
+              ],
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              await updatePlannerPreferences({
+                'advanceDays': int.tryParse(advanceController.text) ?? 7,
+                'bufferHours': int.tryParse(bufferController.text) ?? 24,
+              });
+              if (!ctx.mounted) return;
+              Navigator.pop(ctx);
+              loadData();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A90B8), foregroundColor: Colors.white),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _availabilitySubtitle() {
+    final avail = plannerPrefs?['availability'] as Map<String, dynamic>?;
+    if (avail == null) return 'No blocks set';
+    final enabled = avail.entries.where((e) => e.value['enabled'] == true).toList();
+    if (enabled.isEmpty) return 'No blocks set';
+    return '${enabled.length} block${enabled.length > 1 ? 's' : ''} · ${enabled.map((e) => e.key[0].toUpperCase() + e.key.substring(1, 3)).join(', ')}';
+  }
+  String _schedulingSubtitle() {
+    final advance = plannerPrefs?['advanceDays'] ?? 7;
+    final buffer = plannerPrefs?['bufferHours'] ?? 24;
+    return 'Up to $advance days early · finish ${buffer}h before';
+  }
   Widget _settingsTile(String title, String subtitle, IconData icon, VoidCallback onTap) {
     return ListTile(
       leading: Icon(icon, color: const Color(0xFF4A90B8)),
@@ -1215,86 +1701,130 @@ class _StudyPlannerScreenState extends State<StudyPlannerScreen> {
   bool generating = false;
   DateTime weekStart = DateTime.now();
 
-  @override
-  Widget build(BuildContext context) {
-    final sessions = schedule?['sessions'] as List<dynamic>? ?? [];
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Study Planner', style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
-        elevation: 1,
-        actions: [
-          TextButton.icon(
-            onPressed: generating ? null : handleGenerate,
-            icon: const Icon(Icons.auto_awesome),
-            label: Text(generating ? 'Generating...' : 'Generate Plan'),
+@override
+Widget build(BuildContext context) {
+  final sessions = schedule?['sessions'] as List<dynamic>? ?? [];
+  return Scaffold(
+    appBar: AppBar(
+      title: Image.asset('assets/images/logo2.png', height: 32),
+      backgroundColor: Colors.white,
+      foregroundColor: Colors.black,
+      elevation: 1,
+    ),
+    body: Column(
+      children: [
+        // Header section
+        Container(
+          color: Colors.white,
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Study Planner', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              const Text('Window: 7d before due · finish 24h early · AI-powered', style: TextStyle(color: Colors.grey, fontSize: 12)),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: () {},
+                icon: const Icon(Icons.settings, size: 16),
+                label: const Text('Planner Settings'),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: generating ? null : handleGenerate,
+                  icon: const Icon(Icons.auto_awesome, size: 16),
+                  label: Text(generating ? 'Generating...' : 'Generate Plan', style: const TextStyle(fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF4A90B8),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                IconButton(icon: const Icon(Icons.chevron_left), onPressed: () { weekStart = weekStart.subtract(const Duration(days: 7)); loadSchedule(); }),
-                Text('${_formatDate(weekStart)} – ${_formatDate(weekStart.add(const Duration(days: 6)))}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                IconButton(icon: const Icon(Icons.chevron_right), onPressed: () { weekStart = weekStart.add(const Duration(days: 7)); loadSchedule(); }),
-              ],
-            ),
+        ),
+        // Week navigator
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.chevron_left),
+                onPressed: () { setState(() => weekStart = weekStart.subtract(const Duration(days: 7))); loadSchedule(); },
+              ),
+              Text(_formatWeekRange(weekStart), style: const TextStyle(fontWeight: FontWeight.bold)),
+              IconButton(
+                icon: const Icon(Icons.chevron_right),
+                onPressed: () { setState(() => weekStart = weekStart.add(const Duration(days: 7))); loadSchedule(); },
+              ),
+            ],
           ),
-          Expanded(
-            child: loading
-                ? const Center(child: CircularProgressIndicator())
-                : sessions.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(Icons.auto_awesome, size: 64, color: Colors.grey),
-                            const SizedBox(height: 16),
-                            const Text('No study plan yet for this week', style: TextStyle(fontWeight: FontWeight.bold)),
-                            const SizedBox(height: 8),
-                            ElevatedButton.icon(
-                              onPressed: generating ? null : handleGenerate,
-                              icon: const Icon(Icons.auto_awesome),
-                              label: Text(generating ? 'Generating...' : 'Generate Plan'),
-                              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A90B8), foregroundColor: Colors.white),
+        ),
+        // Content
+        Expanded(
+          child: loading
+              ? const Center(child: CircularProgressIndicator())
+              : sessions.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.auto_awesome, size: 64, color: Colors.grey),
+                          const SizedBox(height: 16),
+                          const Text('No study plan yet for this week', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Hit Generate Plan to auto-schedule your\nassignments based on your availability and\nscheduling window settings.',
+                            style: TextStyle(color: Colors.grey, fontSize: 13),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 20),
+                          ElevatedButton.icon(
+                            onPressed: generating ? null : handleGenerate,
+                            icon: const Icon(Icons.auto_awesome),
+                            label: Text(generating ? 'Generating...' : 'Generate Plan'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF4A90B8),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                             ),
-                          ],
-                        ),
-                      )
-                    : ListView.builder(
-                        padding: const EdgeInsets.all(16),
-                        itemCount: sessions.length,
-                        itemBuilder: (ctx, i) {
-                          final s = sessions[i];
-                          final colorHex = s['courseColor'] ?? '#4A90B8';
-                          final color = Color(int.parse(colorHex.replaceFirst('#', '0xFF')));
-                          return Card(
-                            margin: const EdgeInsets.only(bottom: 8),
-                            child: ListTile(
-                              leading: CircleAvatar(backgroundColor: color, radius: 20, child: Text('${s['duration']}h', style: const TextStyle(color: Colors.white, fontSize: 12))),
-                              title: Text(s['assignmentTitle'] ?? ''),
-                              subtitle: Text('${s['courseTitle'] ?? ''} • ${s['date']} ${s['startTime']}–${s['endTime']}'),
-                              trailing: Checkbox(
-                                value: s['completed'] ?? false,
-                                onChanged: (val) async {
-                                  await updateSession(s['_id'], {'completed': val});
-                                  loadSchedule();
-                                },
-                              ),
-                            ),
-                          );
-                        },
+                          ),
+                        ],
                       ),
-          ),
-        ],
-      ),
-    );
-  }
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: sessions.length,
+                      itemBuilder: (ctx, i) {
+                        final s = sessions[i];
+                        final colorHex = s['courseColor'] ?? '#4A90B8';
+                        final color = Color(int.parse(colorHex.replaceFirst('#', '0xFF')));
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          child: ListTile(
+                            leading: CircleAvatar(backgroundColor: color, radius: 20, child: Text('${s['duration']}h', style: const TextStyle(color: Colors.white, fontSize: 12))),
+                            title: Text(s['assignmentTitle'] ?? ''),
+                            subtitle: Text('${s['courseTitle'] ?? ''} • ${s['date']} ${s['startTime']}–${s['endTime']}'),
+                            trailing: Checkbox(
+                              value: s['completed'] ?? false,
+                              onChanged: (val) async {
+                                await updateSession(s['_id'], {'completed': val});
+                                loadSchedule();
+                              },
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+        ),
+      ],
+    ),
+  );
+}
 
   Future<void> handleGenerate() async {
     setState(() => generating = true);
@@ -1326,6 +1856,15 @@ class _StudyPlannerScreenState extends State<StudyPlannerScreen> {
   }
 
   String _formatDate(DateTime d) => '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  String _formatWeekRange(DateTime start) {
+    final end = start.add(const Duration(days: 6));
+    final months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    if (start.month == end.month) {
+      return '${months[start.month - 1]} ${start.day} – ${end.day}';
+    }
+    return '${months[start.month - 1]} ${start.day} – ${months[end.month - 1]} ${end.day}';
+  }
 
   DateTime _getMonday(DateTime date) {
     return date.subtract(Duration(days: date.weekday - 1));
