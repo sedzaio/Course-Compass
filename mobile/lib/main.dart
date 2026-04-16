@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:table_calendar/table_calendar.dart';
 
 import 'api_service.dart';
 
@@ -14,8 +15,13 @@ void main() async {
 
 Future<void> showAddAssignmentDialog(BuildContext context, VoidCallback onDone) async {
   final titleController = TextEditingController();
+  final descriptionController = TextEditingController();
+  final estimatedHrsController = TextEditingController();
   List<dynamic> courses = [];
   String? selectedCourseId;
+  String selectedType = 'assignment';
+  DateTime? selectedDueDate;
+
   try { courses = await getCourses(); } catch (_) {}
 
   if (!context.mounted) return;
@@ -23,29 +29,98 @@ Future<void> showAddAssignmentDialog(BuildContext context, VoidCallback onDone) 
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setState) => AlertDialog(
-        title: const Text('Add Assignment'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
+        title: const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            TextField(controller: titleController, decoration: const InputDecoration(labelText: 'Title', border: OutlineInputBorder())),
-            const SizedBox(height: 12),
-            if (courses.isNotEmpty)
+            Text('NEW ASSIGNMENT', style: TextStyle(fontSize: 11, color: Colors.blue, fontWeight: FontWeight.bold, letterSpacing: 1)),
+            Text('Add Assignment', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Title *', style: TextStyle(fontWeight: FontWeight.w500)),
+              const SizedBox(height: 6),
+              TextField(controller: titleController, decoration: const InputDecoration(hintText: 'e.g. Chapter 5 Reading', border: OutlineInputBorder())),
+              const SizedBox(height: 16),
+              const Text('Due Date & Time', style: TextStyle(fontWeight: FontWeight.w500)),
+              const SizedBox(height: 6),
+              InkWell(
+                onTap: () async {
+                  final date = await showDatePicker(context: ctx, initialDate: DateTime.now(), firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 365)));
+                  if (date != null) setState(() => selectedDueDate = date);
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                  decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(4)),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.calendar_today, size: 16, color: Colors.grey),
+                      const SizedBox(width: 8),
+                      Text(selectedDueDate != null ? '${selectedDueDate!.year}-${selectedDueDate!.month.toString().padLeft(2,'0')}-${selectedDueDate!.day.toString().padLeft(2,'0')}' : 'mm/dd/yyyy', style: TextStyle(color: selectedDueDate != null ? Colors.black : Colors.grey)),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text('Estimated Time', style: TextStyle(fontWeight: FontWeight.w500)),
+              const SizedBox(height: 6),
+              TextField(controller: estimatedHrsController, decoration: const InputDecoration(hintText: 'hrs', border: OutlineInputBorder()), keyboardType: TextInputType.number),
+              const SizedBox(height: 16),
+              const Text('Course', style: TextStyle(fontWeight: FontWeight.w500)),
+              const SizedBox(height: 6),
               DropdownButtonFormField<String>(
-                decoration: const InputDecoration(labelText: 'Course', border: OutlineInputBorder()),
+                decoration: const InputDecoration(border: OutlineInputBorder()),
+                hint: const Text('— Personal task —'),
                 items: courses.map<DropdownMenuItem<String>>((c) => DropdownMenuItem(value: c['_id'].toString(), child: Text(c['title']))).toList(),
                 onChanged: (val) => setState(() => selectedCourseId = val),
               ),
-          ],
+              const SizedBox(height: 16),
+              const Text('Type', style: TextStyle(fontWeight: FontWeight.w500)),
+              const SizedBox(height: 6),
+              DropdownButtonFormField<String>(
+                initialValue: selectedType,
+                decoration: const InputDecoration(border: OutlineInputBorder()),
+                items: const [
+                  DropdownMenuItem(value: 'assignment', child: Text('Assignment')),
+                  DropdownMenuItem(value: 'quiz', child: Text('Quiz')),
+                  DropdownMenuItem(value: 'exam', child: Text('Exam')),
+                  DropdownMenuItem(value: 'project', child: Text('Project')),
+                  DropdownMenuItem(value: 'reading', child: Text('Reading')),
+                  DropdownMenuItem(value: 'other', child: Text('Other')),
+                ],
+                onChanged: (val) => setState(() => selectedType = val ?? 'assignment'),
+              ),
+              const SizedBox(height: 16),
+              const Text('Notes', style: TextStyle(fontWeight: FontWeight.w500)),
+              const SizedBox(height: 6),
+              TextField(controller: descriptionController, decoration: const InputDecoration(hintText: 'Optional notes...', border: OutlineInputBorder()), maxLines: 3),
+            ],
+          ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
           ElevatedButton(
             onPressed: () async {
-              await createAssignment({'title': titleController.text, 'courseId': ?selectedCourseId});
+              if (titleController.text.isEmpty) return;
+              await createAssignment({
+                'title': titleController.text,
+                'type': selectedType,
+                'description': descriptionController.text,
+                'courseId': ?selectedCourseId,
+                if (selectedDueDate != null) 'dueDate': selectedDueDate!.toIso8601String(),
+                if (estimatedHrsController.text.isNotEmpty) 'estimatedTime': double.tryParse(estimatedHrsController.text),
+              });
               if (!ctx.mounted) return;
               Navigator.pop(ctx);
               onDone();
             },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A90B8), foregroundColor: Colors.white),
             child: const Text('Add'),
           ),
         ],
@@ -256,7 +331,7 @@ class _CanvasSettingsScreenState extends State<CanvasSettingsScreen> {
     try {
       await saveCanvasSettings({'canvasToken': tokenController.text, 'canvasUrl': urlController.text, 'syncFrequency': syncFrequency});
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Canvas settings saved!')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(backgroundColor: Colors.red, content: Text('Canvas settings saved!')));
       loadSettings();
     } finally {
       setState(() => saving = false);
@@ -267,9 +342,9 @@ class _CanvasSettingsScreenState extends State<CanvasSettingsScreen> {
     try {
       final data = await syncCanvas();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sync complete! ${data['count'] ?? 0} assignments imported.')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: Colors.red, content: Text('Sync complete! ${data['count'] ?? 0} assignments imported.')));
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sync failed')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(backgroundColor: Colors.red, content: Text('Sync failed')));
     }
   }
 
@@ -410,6 +485,7 @@ class _CoursesScreenState extends State<CoursesScreen> {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
+  bool _isCalendarView = false;
   List<dynamic> assignments = [];
   Map<String, dynamic>? user;
   bool loading = true;
@@ -419,7 +495,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final pending = assignments.where((a) => a['completed'] != true).toList();
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Course Compass', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: Image.asset('assets/images/logo2.png', height: 32),
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
         elevation: 1,
@@ -431,6 +507,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
+                  // Welcome card
                   Card(
                     child: Padding(
                       padding: const EdgeInsets.all(16),
@@ -441,22 +518,78 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             child: Text(user?['name']?.substring(0, 1).toUpperCase() ?? 'U', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                           ),
                           const SizedBox(width: 12),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('Good afternoon, ${user?['name']?.split(' ')[0] ?? 'there'}!', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                              const Text('Track your assignments and stay on top of your week.', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                            ],
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('Good afternoon, ${user?['name']?.split(' ')[0] ?? 'there'}!', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                const Text('Track your assignments and stay on top of your week.', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                              ],
+                            ),
                           ),
                         ],
                       ),
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  // AI Study Plan card
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(children: [
+                                Icon(Icons.auto_awesome, size: 14, color: Colors.blue),
+                                SizedBox(width: 4),
+                                Text('AI-POWERED', style: TextStyle(fontSize: 11, color: Colors.blue, fontWeight: FontWeight.bold)),
+                              ]),
+                              SizedBox(height: 4),
+                              Text('Study Plan', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                              Text('No plan yet for this week.', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                            ],
+                          ),
+                          ElevatedButton.icon(
+                            onPressed: () {},
+                            icon: const Icon(Icons.auto_awesome, size: 14),
+                            label: const Text('Generate Plan'),
+                            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A90B8), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  // Filter chips
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _filterChip('Overdue', assignments.where((a) => a['completed'] != true && a['dueDate'] != null && DateTime.tryParse(a['dueDate'] ?? '')?.isBefore(DateTime.now()) == true).length, Colors.red),
+                      _filterChip('This week', assignments.where((a) => a['completed'] != true).length, Colors.blue),
+                      _filterChip('Next week', 0, Colors.blue),
+                      _filterChip('Pending', assignments.where((a) => a['completed'] != true).length, Colors.orange),
+                      _filterChip('Completed', assignments.where((a) => a['completed'] == true).length, Colors.green),
+                      _filterChip('No due date', assignments.where((a) => a['dueDate'] == null).length, Colors.grey),
+                      _filterChip('All', assignments.length, Colors.grey),
+                    ],
+                  ),
                   const SizedBox(height: 16),
+                  // Assignments header
+                  // List/Calendar toggle + Add button
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('Assignments', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Assignments', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                          Text('${assignments.where((a) => a['completed'] != true).length} pending', style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                        ],
+                      ),
                       ElevatedButton.icon(
                         onPressed: () => showAddAssignmentDialog(context, loadData),
                         icon: const Icon(Icons.add, size: 16),
@@ -466,7 +599,54 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  if (pending.isEmpty)
+                  // Toggle buttons
+                  Row(
+                    children: [
+                      GestureDetector(
+                        onTap: () => setState(() => _isCalendarView = false),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: !_isCalendarView ? const Color(0xFF4A90B8) : Colors.transparent,
+                            borderRadius: const BorderRadius.horizontal(left: Radius.circular(8)),
+                            border: Border.all(color: const Color(0xFF4A90B8)),
+                          ),
+                          child: Row(children: [
+                            Icon(Icons.list, size: 16, color: !_isCalendarView ? Colors.white : const Color(0xFF4A90B8)),
+                            const SizedBox(width: 4),
+                            Text('List', style: TextStyle(color: !_isCalendarView ? Colors.white : const Color(0xFF4A90B8), fontSize: 13)),
+                          ]),
+                        ),
+                      ),
+                      GestureDetector(
+                        onTap: () => setState(() => _isCalendarView = true),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: _isCalendarView ? const Color(0xFF4A90B8) : Colors.transparent,
+                            borderRadius: const BorderRadius.horizontal(right: Radius.circular(8)),
+                            border: Border.all(color: const Color(0xFF4A90B8)),
+                          ),
+                          child: Row(children: [
+                            Icon(Icons.calendar_today, size: 16, color: _isCalendarView ? Colors.white : const Color(0xFF4A90B8)),
+                            const SizedBox(width: 4),
+                            Text('Calendar', style: TextStyle(color: _isCalendarView ? Colors.white : const Color(0xFF4A90B8), fontSize: 13)),
+                          ]),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  // Content
+                  if (_isCalendarView)
+                    Card(
+                      child: TableCalendar(
+                        focusedDay: DateTime.now(),
+                        firstDay: DateTime(2024),
+                        lastDay: DateTime(2027),
+                      ),
+                    )
+                  else if (assignments.where((a) => a['completed'] != true).isEmpty)
                     const Card(
                       child: Padding(
                         padding: EdgeInsets.all(32),
@@ -481,7 +661,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                     )
                   else
-                    ...pending.map((a) => AssignmentCard(assignment: a, onUpdate: loadData)),
+                    ...assignments.where((a) => a['completed'] != true).map((a) => AssignmentCard(assignment: a, onUpdate: loadData)),
+                  
                 ],
               ),
             ),
@@ -502,6 +683,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } catch (e) {
       setState(() => loading = false);
     }
+  }
+
+  Widget _filterChip(String label, int count, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        border: Border.all(color: color.withOpacity(0.5)),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text('$count  $label', style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w500)),
+    );
   }
 }
 
@@ -547,7 +739,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     try {
       final data = await resetPassword(emailController.text.trim(), codeController.text.trim(), newPasswordController.text);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(data['message'] ?? 'Password reset!')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: Colors.red, content: Text(data['message'] ?? 'Password reset!')));
       Navigator.pop(context);
     } finally {
       setState(() => loading = false);
@@ -557,7 +749,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   Future<void> handleSendCode() async {
     if (!emailController.text.contains('@')) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please include an '@' in the email address.")),
+        const SnackBar(backgroundColor: Colors.red, content: Text("Please include an '@' in the email address.")),
       );
       return;
     }
@@ -566,7 +758,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       await forgotPassword(emailController.text.trim());
       setState(() => step = 'reset');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reset code sent to email')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(backgroundColor: Colors.red, content: Text('Reset code sent to email')));
     } finally {
       setState(() => loading = false);
     }
@@ -593,7 +785,7 @@ class _LoginScreenState extends State<LoginScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.school, size: 64, color: Color(0xFF4A90B8)),
+                  Image.asset('assets/images/logo.png', height: 80),
                   const SizedBox(height: 8),
                   const Text('Course Compass', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 4),
@@ -636,7 +828,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> handleLogin() async {
     if (!emailController.text.contains('@')) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please include an '@' in the email address.")),
+        const SnackBar(backgroundColor: Colors.red, content: Text("Please include an '@' in the email address.")),
       );
       return;
     }
@@ -651,10 +843,10 @@ class _LoginScreenState extends State<LoginScreen> {
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const MainShell()));
       } else {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(data['message'] ?? 'Login failed')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: Colors.red, content: Text(data['message'] ?? 'Login failed')));
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Something went wrong')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(backgroundColor: Colors.red, content: Text('Something went wrong')));
     } finally {
       setState(() => loading = false);
     }
@@ -716,7 +908,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.school, size: 64, color: Color(0xFF4A90B8)),
+                  Image.asset('assets/images/logo.png', height: 80),
                   const Text('Course Compass', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
                   const Text('Create Account', style: TextStyle(color: Colors.grey)),
                   const SizedBox(height: 24),
@@ -761,7 +953,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   Future<void> handleRegister() async {
     if (passwordController.text != retypeController.text) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Passwords do not match')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(backgroundColor: Colors.red, content: Text('Passwords do not match')));
       return;
     }
     setState(() => loading = true);
@@ -769,16 +961,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
       final verifyData = await verifyCode(emailController.text.trim(), codeController.text.trim());
       if (verifyData['verified'] != true) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(verifyData['message'] ?? 'Invalid code')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: Colors.red, content: Text(verifyData['message'] ?? 'Invalid code')));
         return;
       }
       final data = await register(nameController.text.trim(), emailController.text.trim(), passwordController.text);
       if (!mounted) return;
       if (data['message'] != null && data['message'].toString().contains('complete')) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Account created! Please login.')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(backgroundColor: Colors.red, content: Text('Account created! Please login.')));
         Navigator.pop(context);
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(data['message'] ?? 'Error')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: Colors.red, content: Text(data['message'] ?? 'Error')));
       }
     } finally {
       setState(() => loading = false);
@@ -792,9 +984,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
       if (!mounted) return;
       if (data['message'] != null && data['message'].toString().contains('sent')) {
         setState(() => step = 'verify');
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Verification code sent!')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(backgroundColor: Colors.red, content: Text('Verification code sent!')));
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(data['message'] ?? 'Error')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: Colors.red, content: Text(data['message'] ?? 'Error')));
       }
     } finally {
       setState(() => loading = false);
@@ -1026,7 +1218,7 @@ class _StudyPlannerScreenState extends State<StudyPlannerScreen> {
     } catch (e) {
       setState(() => generating = false);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to generate plan')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(backgroundColor: Colors.red, content: Text('Failed to generate plan')));
     }
   }
 
