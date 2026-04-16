@@ -377,55 +377,82 @@ class _CoursesScreenState extends State<CoursesScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('My Courses', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: Image.asset('assets/images/logo2.png', height: 32),
         backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
         elevation: 1,
-        actions: [
-          IconButton(icon: const Icon(Icons.add), onPressed: showAddCourseDialog),
-        ],
       ),
       body: loading
           ? const Center(child: CircularProgressIndicator())
-          : courses.isEmpty
-              ? const Center(
+          : Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
                   child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.book_outlined, size: 64, color: Colors.grey),
-                      SizedBox(height: 16),
-                      Text('No courses yet', style: TextStyle(fontWeight: FontWeight.bold)),
-                      Text('Add a course above or sync from Canvas in Settings.', style: TextStyle(color: Colors.grey)),
+                      const Text('My Courses', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                      Text('${courses.length} courses', style: const TextStyle(color: Colors.grey)),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: showAddCourseDialog,
+                          icon: const Icon(Icons.add),
+                          label: const Text('Add Course'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF4A90B8),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                        ),
+                      ),
                     ],
                   ),
-                )
-              : RefreshIndicator(
-                  onRefresh: loadCourses,
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: courses.length,
-                    itemBuilder: (ctx, i) {
-                      final c = courses[i];
-                      final colorHex = c['color'] ?? '#4A90B8';
-                      final color = Color(int.parse(colorHex.replaceFirst('#', '0xFF')));
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        child: ListTile(
-                          leading: CircleAvatar(backgroundColor: color, child: Text(c['title']?.substring(0, 1) ?? 'C', style: const TextStyle(color: Colors.white))),
-                          title: Text(c['title'] ?? ''),
-                          subtitle: Text('${c['code'] ?? ''} • ${c['semester'] ?? ''}'),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.delete, color: Colors.red),
-                            onPressed: () async {
-                              await deleteCourse(c['_id']);
-                              loadCourses();
+                ),
+                Expanded(
+                  child: courses.isEmpty
+                      ? const Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.menu_book_outlined, size: 64, color: Color(0xFF4A90B8)),
+                              SizedBox(height: 16),
+                              Text('No courses yet', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                              SizedBox(height: 8),
+                              Text('Add a course above or sync from Canvas in Settings.', style: TextStyle(color: Colors.grey), textAlign: TextAlign.center),
+                            ],
+                          ),
+                        )
+                      : RefreshIndicator(
+                          onRefresh: loadCourses,
+                          child: ListView.builder(
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            itemCount: courses.length,
+                            itemBuilder: (ctx, i) {
+                              final c = courses[i];
+                              final colorHex = c['color'] ?? '#4A90B8';
+                              final color = Color(int.parse(colorHex.replaceFirst('#', '0xFF')));
+                              return Card(
+                                margin: const EdgeInsets.only(bottom: 8),
+                                child: ListTile(
+                                  leading: CircleAvatar(backgroundColor: color, child: Text(c['title']?.substring(0, 1) ?? 'C', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))),
+                                  title: Text(c['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                                  subtitle: Text('${c['code'] ?? ''} • ${c['instructor'] ?? ''} • ${c['semester'] ?? ''}'),
+                                  trailing: IconButton(
+                                    icon: const Icon(Icons.delete, color: Colors.red),
+                                    onPressed: () async {
+                                      await deleteCourse(c['_id']);
+                                      loadCourses();
+                                    },
+                                  ),
+                                ),
+                              );
                             },
                           ),
                         ),
-                      );
-                    },
-                  ),
                 ),
+              ],
+            ),
     );
   }
 
@@ -449,40 +476,99 @@ class _CoursesScreenState extends State<CoursesScreen> {
     final codeController = TextEditingController();
     final instructorController = TextEditingController();
     final semesterController = TextEditingController();
+    String selectedColor = '#81A6C6';
+
+    final presetColors = [
+      '#81A6C6', '#4DB6AC', '#66BB6A', '#80CBC4',
+      '#9575CD', '#EF9A9A', '#FF8A65', '#FDD835',
+      '#F9A825', '#78909C', '#8D6E63', '#7E57C2',
+    ];
+
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Add Course'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: const Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              TextField(controller: titleController, decoration: const InputDecoration(labelText: 'Title', border: OutlineInputBorder())),
-              const SizedBox(height: 12),
-              TextField(controller: codeController, decoration: const InputDecoration(labelText: 'Code (e.g. COP3530)', border: OutlineInputBorder())),
-              const SizedBox(height: 12),
-              TextField(controller: instructorController, decoration: const InputDecoration(labelText: 'Instructor', border: OutlineInputBorder())),
-              const SizedBox(height: 12),
-              TextField(controller: semesterController, decoration: const InputDecoration(labelText: 'Semester (e.g. Spring 2026)', border: OutlineInputBorder())),
+              Text('Course Name *', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
             ],
           ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () async {
-              await createCourse({'title': titleController.text, 'code': codeController.text, 'instructor': instructorController.text, 'semester': semesterController.text, 'color': '#4A90B8'});
-              if (!ctx.mounted) return;
-              Navigator.pop(ctx);
-              loadCourses();
-            },
-            child: const Text('Add'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(controller: titleController, decoration: const InputDecoration(hintText: 'e.g. Introduction to Computer Science', border: OutlineInputBorder())),
+                const SizedBox(height: 16),
+                const Text('Course Code', style: TextStyle(fontWeight: FontWeight.w500)),
+                const SizedBox(height: 6),
+                TextField(controller: codeController, decoration: const InputDecoration(hintText: 'e.g. COP4331', border: OutlineInputBorder())),
+                const SizedBox(height: 16),
+                const Text('Instructor', style: TextStyle(fontWeight: FontWeight.w500)),
+                const SizedBox(height: 6),
+                TextField(controller: instructorController, decoration: const InputDecoration(hintText: 'e.g. Dr. Smith', border: OutlineInputBorder())),
+                const SizedBox(height: 16),
+                const Text('Semester', style: TextStyle(fontWeight: FontWeight.w500)),
+                const SizedBox(height: 6),
+                TextField(controller: semesterController, decoration: const InputDecoration(hintText: 'e.g. Spring 2026', border: OutlineInputBorder())),
+                const SizedBox(height: 16),
+                const Text('Course Color', style: TextStyle(fontWeight: FontWeight.w500)),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: presetColors.map((hex) {
+                    final color = Color(int.parse(hex.replaceFirst('#', '0xFF')));
+                    final isSelected = selectedColor == hex;
+                    return GestureDetector(
+                      onTap: () => setState(() => selectedColor = hex),
+                      child: Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          color: color,
+                          shape: BoxShape.circle,
+                          border: isSelected ? Border.all(color: Colors.black, width: 2) : null,
+                        ),
+                        child: isSelected ? const Icon(Icons.check, color: Colors.white, size: 18) : null,
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
           ),
-        ],
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () async {
+                  if (titleController.text.isEmpty) return;
+                  await createCourse({
+                    'title': titleController.text,
+                    'code': codeController.text,
+                    'instructor': instructorController.text,
+                    'semester': semesterController.text,
+                    'color': selectedColor,
+                  });
+                  if (!ctx.mounted) return;
+                  Navigator.pop(ctx);
+                  loadCourses();
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A90B8), foregroundColor: Colors.white),
+                child: const Text('Add Course'),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
+
+
 
 class _DashboardScreenState extends State<DashboardScreen> {
   bool _isCalendarView = false;
