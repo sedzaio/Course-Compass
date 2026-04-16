@@ -5,8 +5,6 @@ const sessionSchema = new mongoose.Schema({
   assignmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Assignment', required: true },
   title:        { type: String, required: true },
   courseId:     { type: mongoose.Schema.Types.ObjectId, ref: 'Course', default: null },
-  courseCode:   { type: String, default: null },
-  canvasUrl:    { type: String, default: null },
   date:         { type: String, required: true },
   from:         { type: String, required: true },
   to:           { type: String, required: true },
