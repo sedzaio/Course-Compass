@@ -7,7 +7,6 @@ const axios      = require('axios');
 const auth       = require('../middleware/auth');
 const User       = require('../models/User');
 const Assignment = require('../models/Assignment');
-const Course     = require('../models/Course');
 const StudyPlan  = require('../models/StudyPlan');
 
 // ─── Constants ───────────────────────────────────────────────────────────────────────────
@@ -56,6 +55,8 @@ function fromMins(mins) {
 function r4(n) { return Math.round(n * 4) / 4; }
 
 // Backfill severity on unscheduled items loaded from DB that predate the severity field.
+// Old docs have severity=undefined; default them to 'soft' so the frontend always
+// receives a valid severity string.
 function backfillUnscheduled(unscheduled) {
   if (!Array.isArray(unscheduled)) return [];
   return unscheduled.map(u => ({
@@ -236,13 +237,21 @@ router.post('/generate', auth, async (req, res) => {
     }).sort({ dueDate: 1 });
 
     // ── 4. Classify assignments ────────────────────────────────────────────────────────
+    //
+    // overdue  : win.latest <= today  → skip silently
+    // eligible : window overlaps this week → attempt to schedule
+    //
+    // After scheduling, unplaced eligible items are split:
+    //   critical : win.latest <= weekEnd  → window trapped this week; must fix availability now
+    //   soft     : win.latest >  weekEnd  → window extends beyond this week; try another week
+    //
     const eligible = [];
 
     for (const a of allAssignments) {
       const win = schedulingWindow(a.dueDate, advanceDays, bufferHours);
       if (!win) continue;
-      if (win.latest <= today) continue;
-      if (win.earliest > weekEnd || win.latest < weekStart) continue;
+      if (win.latest <= today) continue;                      // overdue — skip silently
+      if (win.earliest > weekEnd || win.latest < weekStart) continue; // not this week
       eligible.push({ a, win });
     }
 
@@ -280,19 +289,7 @@ router.post('/generate', auth, async (req, res) => {
       }
     }
 
-    // ── 7. Build per-course code lookup ──────────────────────────────────────────────
-    // Collect unique courseIds from eligible assignments then fetch codes in one query.
-    const courseIdSet = new Set();
-    for (const { a } of eligible) {
-      if (a.courseId) courseIdSet.add(a.courseId.toString());
-    }
-    const courseCodeMap = {};
-    if (courseIdSet.size > 0) {
-      const courses = await Course.find({ _id: { $in: [...courseIdSet] } }).select('_id code');
-      for (const c of courses) courseCodeMap[c._id.toString()] = c.code || null;
-    }
-
-    // ── 8. Build assignmentMeta + aiTasks ────────────────────────────────────────────
+    // ── 7. Build assignmentMeta + aiTasks ────────────────────────────────────────────
     const assignmentMeta = {};
     const aiTasks        = [];
 
@@ -311,18 +308,17 @@ router.post('/generate', auth, async (req, res) => {
       const schedFromStr = toDateStr(effectiveFrom);
       const schedToStr   = toDateStr(clampedLatest);
       const latestEndMins = clampedLatest.getUTCHours() * 60 + clampedLatest.getUTCMinutes();
-      const courseIdStr  = a.courseId ? a.courseId.toString() : null;
 
       assignmentMeta[id] = {
         id,
         title:      a.title,
-        courseId:   courseIdStr,
-        courseCode: courseIdStr ? (courseCodeMap[courseIdStr] || null) : null,
-        canvasUrl:  a.canvasUrl || null,
+        courseId:   a.courseId ? a.courseId.toString() : null,
         remaining,
         schedFrom:  schedFromStr,
         schedTo:    schedToStr,
         latestEndMins,
+        // true  → window closes on or before weekEnd: this week is the ONLY chance
+        // false → window extends past weekEnd: another week may work
         windowTrappedThisWeek: win.latest <= weekEnd,
       };
 
@@ -340,7 +336,7 @@ router.post('/generate', auth, async (req, res) => {
       return res.json({ sessions: [], warnings: [], unscheduled: [], hasCritical: false, weekStart: weekStartStr });
     }
 
-    // ── 9. Build per-date slot map ────────────────────────────────────────────────────
+    // ── 8. Build per-date slot map ────────────────────────────────────────────────────
     const dailySlots = {};
     for (let i = 0; i <= 6; i++) {
       const d = new Date(weekStart);
@@ -372,7 +368,7 @@ router.post('/generate', auth, async (req, res) => {
       });
     }
 
-    // ── 10. AI prompt + call ───────────────────────────────────────────────────────────
+    // ── 9. AI prompt + call ───────────────────────────────────────────────────────────
     const totalAvailMins  = Object.values(dailySlots).flat().reduce((s, b) => s + toMins(b.to) - toMins(b.from), 0);
     const totalNeededMins = aiTasks.reduce((s, t) => s + Math.round(t.hours * 60), 0);
 
@@ -459,7 +455,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       console.warn('Groq call failed — using deterministic fallback:', groqErr.response?.data || groqErr.message);
     }
 
-    // ── 11. Validate every AI session ────────────────────────────────────────────────
+    // ── 10. Validate every AI session ────────────────────────────────────────────────
     const availByDate = {};
     for (const [dateStr, blocks] of Object.entries(dailySlots)) {
       availByDate[dateStr] = blocks.map(b => ({ fromMins: toMins(b.from), toMins: toMins(b.to) }));
@@ -485,7 +481,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
 
     candidates.sort((a, b) => a.date !== b.date ? a.date.localeCompare(b.date) : a.fromM - b.fromM);
 
-    // ── 12. Deterministic fallback ────────────────────────────────────────────────────
+    // ── 11. Deterministic fallback ────────────────────────────────────────────────────
     const aiMinutesById = {};
     for (const c of candidates) aiMinutesById[c.id] = (aiMinutesById[c.id] || 0) + c.sessMins;
 
@@ -623,7 +619,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
     const allCandidates = [...candidates, ...fallbackCandidates];
     allCandidates.sort((a, b) => a.date !== b.date ? a.date.localeCompare(b.date) : a.fromM - b.fromM);
 
-    // ── 13. Place sessions: dedup overlaps + cap to remaining ─────────────────────────
+    // ── 12. Place sessions: dedup overlaps + cap to remaining ─────────────────────────
     const placedMinsById = {};
     const occupiedByDate = {};
     const finalSessions  = [];
@@ -650,8 +646,6 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
         assignmentId: meta.id,
         title:        meta.title,
         courseId:     meta.courseId || null,
-        courseCode:   meta.courseCode || null,
-        canvasUrl:    meta.canvasUrl || null,
         date:         s.date,
         from:         fromMins(fromM),
         to:           fromMins(toM),
@@ -661,7 +655,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
       });
     }
 
-    // ── 14. Compute warnings + unscheduled (with severity) ────────────────────────────
+    // ── 13. Compute warnings + unscheduled (with severity) ────────────────────────────
     const warnings    = [];
     const unscheduled = [];
 
@@ -692,7 +686,7 @@ OUTPUT (exact shape, NO extra keys, NO extra text)
 
     const hasCritical = unscheduled.some(u => u.severity === 'critical');
 
-    // ── 15. Save + respond ────────────────────────────────────────────────────────────
+    // ── 14. Save + respond ────────────────────────────────────────────────────────────
     const saved = await upsertPlan(req.userId, weekStartStr, finalSessions, warnings, unscheduled);
 
     res.json({
@@ -738,6 +732,8 @@ router.get('/schedule', auth, async (req, res) => {
     const plan = await StudyPlan.findOne({ userId: req.userId, weekStart });
     if (!plan) return res.status(404).json({ message: 'No plan found for this week' });
 
+    // Backfill severity on old documents that were saved before this field existed.
+    // Mongoose default only applies on insert; old docs may have severity=undefined.
     res.json({
       ...plan.toObject(),
       unscheduled: backfillUnscheduled(plan.unscheduled),
